@@ -94,8 +94,8 @@ type RepoConfig struct {
 	Commands       Commands          `yaml:"commands"`
 	IgnorePatterns []string          `yaml:"ignore_patterns"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
-	// fields (commands.{test,lint,format} and agent) from a contributor's
-	// pushed branch instead of the trusted default-branch copy. It is read
+	// fields (commands.{test,lint,format}, agent, and steps) from a
+	// contributor's pushed branch instead of the trusted default-branch copy. It is read
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
@@ -121,6 +121,11 @@ type RepoConfig struct {
 	// able to turn it off (or on). Default false; a plain bool so a missing key
 	// or a YAML/JSON null is falsy and preserves current loading.
 	DisableProjectSettings bool `yaml:"disable_project_settings"`
+	// Steps optionally enables/disables/reorders the built-in pipeline steps.
+	// Empty means the full default pipeline. Like Commands and Agent, it
+	// selects which code executes, so it is read from the trusted
+	// default-branch copy unless allow_repo_commands is set.
+	Steps []StepSpec `yaml:"steps"`
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -143,6 +148,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Test                   TestRaw     `yaml:"test"`
 		Document               DocumentRaw `yaml:"document"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
+		Steps                  []StepSpec  `yaml:"steps"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -159,6 +165,30 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Test = raw.Test
 	c.Document = raw.Document
 	c.DisableProjectSettings = raw.DisableProjectSettings
+	c.Steps = raw.Steps
+	return nil
+}
+
+// StepSpec selects one pipeline step in a repo's `steps:` list. Today only
+// scalar built-in step names are accepted (e.g. `steps: [rebase, test]`);
+// the struct form leaves room to grow per-step options later without
+// changing the config surface.
+type StepSpec struct {
+	Name string
+}
+
+// UnmarshalYAML accepts a plain scalar step name. Mapping-form entries are
+// rejected with a clear error so a future per-step-options syntax is never
+// silently misparsed by an older binary.
+func (s *StepSpec) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.ScalarNode {
+		return fmt.Errorf("parse repo config: steps entries must be plain step names (line %d)", value.Line)
+	}
+	var name string
+	if err := value.Decode(&name); err != nil {
+		return fmt.Errorf("parse repo config: steps entry: %w", err)
+	}
+	s.Name = strings.TrimSpace(name)
 	return nil
 }
 
@@ -216,6 +246,9 @@ type Config struct {
 	// project-level settings/instructions suppressed; the daemon fails the run
 	// closed if the resolved harness has no verified suppression knob.
 	DisableProjectSettings bool
+	// Steps is the repo's pipeline step selection (repo-only, like Commands).
+	// Empty means the full default pipeline.
+	Steps []StepSpec
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1049,10 +1082,11 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // given a pushed-branch copy and the trusted default-branch copy.
 //
 // The code-executing selection fields - Commands (run verbatim via sh -c on
-// the daemon host) and Agent/Agents (select which processes launch with the
-// maintainer's credentials, including fallback lists and acp: targets) - are
-// taken only from the trusted copy when it is present, so a contributor's
-// pushed branch cannot inject shell or pick an agent. Document (the
+// the daemon host), Agent/Agents (select which processes launch with the
+// maintainer's credentials, including fallback lists and acp: targets), and
+// Steps (selects which pipeline steps execute) - are taken only from the
+// trusted copy when it is present, so a contributor's pushed branch cannot
+// inject shell, pick an agent, or drop validation steps. Document (the
 // documentation placement policy injected into the document gate prompt) is
 // trusted-only for the same reason: a pushed branch must not weaken the
 // documentation rules that gate itself. DisableProjectSettings is also
@@ -1094,10 +1128,12 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Commands = trusted.Commands
 		effective.Agent = trusted.Agent
 		effective.Agents = copyAgents(trusted.Agents)
+		effective.Steps = trusted.Steps
 	} else {
 		effective.Commands = Commands{}
 		effective.Agent = ""
 		effective.Agents = nil
+		effective.Steps = nil
 	}
 	return &effective
 }
@@ -1273,6 +1309,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
+		Steps:                  repo.Steps,
 	}
 
 	if repo.Agent != "" {

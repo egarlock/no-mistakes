@@ -207,7 +207,7 @@ func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatalf("mark run running: %v", err)
 	}
-	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	step, err := database.InsertStepResult(run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	if err := database.UpdateRunStatus(other.ID, types.RunRunning); err != nil {
 		t.Fatalf("mark other run running: %v", err)
 	}
-	step, err := database.InsertStepResult(other.ID, types.StepReview)
+	step, err := database.InsertStepResult(other.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatalf("insert other step: %v", err)
 	}
@@ -647,7 +647,7 @@ func TestAxiStatusEscapesControlBytesInAwaitingTestGate(t *testing.T) {
 	if err := database.UpdateRunStatus(dbRun.ID, types.RunRunning); err != nil {
 		t.Fatalf("mark run running: %v", err)
 	}
-	step, err := database.InsertStepResult(dbRun.ID, types.StepTest)
+	step, err := database.InsertStepResult(dbRun.ID, types.StepTest, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestAxiStatusIgnoresInvalidGlobalConfig(t *testing.T) {
 	if err := database.UpdateRunStatus(dbRun.ID, types.RunCompleted); err != nil {
 		t.Fatalf("mark run completed: %v", err)
 	}
-	step, err := database.InsertStepResult(dbRun.ID, types.StepReview)
+	step, err := database.InsertStepResult(dbRun.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}
