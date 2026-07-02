@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -22,8 +23,8 @@ import (
 func TestSubscribeReceivesEvents(t *testing.T) {
 	approvalStep := &mockApprovalStep{name: types.StepReview}
 
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{approvalStep}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{approvalStep}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-sub1")
@@ -115,8 +116,8 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	started := make(chan struct{})
 	slowStep := &mockSlowStep{name: types.StepReview, started: started}
 
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{slowStep}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{slowStep}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-sub2")
@@ -189,8 +190,8 @@ done:
 
 func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
 	// Use a fast step so the run completes quickly.
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepTest}}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{&mockPassStep{name: types.StepTest}}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-sub-done")
@@ -275,7 +276,7 @@ func TestRecoverStaleRunsOnStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.UpdateRunStatus(staleRun.ID, types.RunRunning)
-	staleStep, err := d.InsertStepResult(staleRun.ID, types.StepReview)
+	staleStep, err := d.InsertStepResult(staleRun.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,8 +293,8 @@ func TestRecoverStaleRunsOnStartup(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
-			return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+		errCh <- RunWithOptions(p, d, func(_ *config.Config) ([]pipeline.Step, error) {
+			return []pipeline.Step{&mockPassStep{name: types.StepReview}}, nil
 		})
 	}()
 
@@ -371,7 +372,7 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
 		t.Fatal(err)
 	}
-	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	step, err := d.InsertStepResult(run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,8 +395,8 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
-			return []pipeline.Step{&mockApprovalStep{name: types.StepReview}}
+		errCh <- RunWithOptions(p, d, func(_ *config.Config) ([]pipeline.Step, error) {
+			return []pipeline.Step{&mockApprovalStep{name: types.StepReview}}, nil
 		})
 	}()
 	defer func() {
@@ -499,7 +500,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
 				t.Fatal(err)
 			}
-			step, err := d.InsertStepResult(run.ID, types.StepCI)
+			step, err := d.InsertStepResult(run.ID, types.StepCI, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -524,7 +525,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{&steps.CIStep{}} })
+				errCh <- RunWithOptions(p, d, func(_ *config.Config) ([]pipeline.Step, error) { return []pipeline.Step{&steps.CIStep{}}, nil })
 			}()
 			defer func() {
 				client, dialErr := ipc.Dial(p.Socket())
@@ -588,8 +589,8 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
-			return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+		errCh <- RunWithOptions(p, d, func(_ *config.Config) ([]pipeline.Step, error) {
+			return []pipeline.Step{&mockPassStep{name: types.StepReview}}, nil
 		})
 	}()
 

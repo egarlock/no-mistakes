@@ -128,7 +128,7 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
-	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

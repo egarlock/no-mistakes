@@ -6,15 +6,15 @@ description: All fields for .no-mistakes.yaml.
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
 :::caution[Security: gate-control fields are read from the default branch]
-`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
-To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
+`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials, and `steps` selects which validation steps run at all.
+To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands`, `agent`, and `steps` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
 The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
 Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
 
-If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
+If you genuinely want per-branch `commands`, `agent`, and `steps` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
 
 ```yaml
@@ -40,6 +40,10 @@ document:
 # For orchestration repos whose project instructions would misidentify gate agents.
 # Read only from the trusted default branch. Defaults to false.
 disable_project_settings: true
+
+# Optional: enable/disable/reorder the built-in pipeline steps.
+# Omit for the full default pipeline.
+# steps: [rebase, test, push, pr, ci]
 
 auto_fix:
   rebase: 3
@@ -99,14 +103,14 @@ This per-repo `agent` value, including every fallback entry, is still read from 
 
 ### allow_repo_commands
 
-Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
+Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}`, `agent`, and `steps`) from a contributor's pushed branch instead of the trusted default-branch copy.
 
 | | |
 |---|---|
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands`, `agent`, and `steps` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell, pick the launched agent on the daemon host, or drop validation steps from the pipeline. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### disable_project_settings
 
@@ -208,6 +212,26 @@ Pattern matching rules:
 | `*.generated.go` | No slash - matches by basename |
 | `vendor/**` | Ends with `/**` - matches entire subtree |
 | `some/path/file.go` | Contains a slash - full path glob |
+
+### steps
+
+Enable, disable, or reorder the built-in pipeline steps for this repo. Each entry is a step name; the pipeline runs exactly the listed steps, in list order.
+
+| | |
+|---|---|
+| Type | `string[]` |
+| Values | `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, `ci` |
+| Default | Empty (the full default pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`) |
+
+```yaml
+steps: [rebase, test, push, pr, ci]
+```
+
+Names must be unique and name a built-in step. The push chain keeps its data-loss guarantees: `ci` requires `pr` earlier in the list, `pr` requires `push`, and `push` requires `rebase` (the rebase step's fetch anchors the push step's force-push lease). A list that violates these rules fails the run at start with an error listing every problem — there is no silent fallback. Placing `intent` after the steps that consume it, or a fixing step (`review`, `test`, `document`, `lint`) after `push`, is allowed but logged as a warning since those fixes never reach the remote.
+
+Like `commands` and `agent`, `steps` selects which code executes, so it is read from the trusted default-branch copy of `.no-mistakes.yaml` unless [`allow_repo_commands`](#allow_repo_commands) is enabled. A `steps:` value on a pushed branch is otherwise ignored.
+
+Per-run skips (`--skip`, `git push -o no-mistakes.skip=<steps>`) still apply on top of the configured list.
 
 ### auto_fix
 

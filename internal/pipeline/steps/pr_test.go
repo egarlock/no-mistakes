@@ -250,7 +250,7 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +588,7 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +602,7 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,7 +1157,7 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 	sctx.UserIntent = "Keep generated sections visible.\n" + strings.Repeat("oversized intent context line\n", 2500)
 
 	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"validates generated PR body length handling"}`
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1172,7 +1172,7 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 	}
 
 	testFindings := `{"findings":[],"summary":"","testing_summary":"Validated generated PR body length handling.","tested":["go test ./internal/pipeline/steps"]}`
-	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1220,7 +1220,7 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.UserIntent = "Keep PR creation postable when long validation runs accumulate many pipeline update rounds."
 
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1281,7 +1281,7 @@ func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
 	sctx.Env = env
 	sctx.UserIntent = "Keep PR creation postable.\n" + strings.Repeat("intent context line stays visible\n", 900)
 
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
