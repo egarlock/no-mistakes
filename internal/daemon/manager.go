@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -529,6 +528,44 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 	return nil
 }
 
+// loadTrustedStepInstructions reads every instruction file declared on the
+// run's steps at the trusted default-branch SHA and returns their concatenated
+// contents (each section prefixed with its path).
+//
+// SECURITY: instruction content is read at trustedSHA via `git show`, never
+// from the pushed worktree, so a contributor's branch cannot rewrite the
+// guidance injected into the gate's own agent steps. This holds even under
+// allow_repo_commands: the *paths* may then come from the pushed branch, but
+// the *content* is always the trusted default-branch copy. With no trusted SHA
+// (fetch failed, no default branch) it fails closed — no instructions. A file
+// absent at trustedSHA (or an unreadable one) simply contributes nothing.
+func loadTrustedStepInstructions(ctx context.Context, wtDir, trustedSHA string, specs []config.StepSpec, runID string) string {
+	if trustedSHA == "" {
+		return ""
+	}
+	seen := make(map[string]bool)
+	var sections []string
+	for _, spec := range specs {
+		for _, path := range spec.Instructions {
+			path = strings.TrimSpace(path)
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			content, err := git.ShowFile(ctx, wtDir, trustedSHA, path)
+			if err != nil {
+				slog.Warn("step instructions: file not present on trusted default branch; skipping", "run_id", runID, "sha", trustedSHA, "path", path, "error", err)
+				continue
+			}
+			if content = strings.TrimSpace(content); content == "" {
+				continue
+			}
+			sections = append(sections, "# "+path+"\n"+content)
+		}
+	}
+	return strings.Join(sections, "\n\n")
+}
+
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
@@ -739,13 +776,17 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent/steps from pushed branch", "run_id", run.ID, "branch", branch)
-	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) || !slices.Equal(repoCfg.Steps, effectiveRepoCfg.Steps) {
+	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) || !config.StepSpecsEqual(repoCfg.Steps, effectiveRepoCfg.Steps) {
 		// Surface the silent override so a maintainer who shipped a commands.*,
 		// agent, or steps change on a feature branch understands why it did not
 		// run. This is not an error: it is the secure default in action.
 		slog.Info("repo commands/agent/steps loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	// Resolve per-step instruction files at the trusted default-branch SHA (not
+	// the pushed worktree) so a contributor's branch cannot rewrite the guidance
+	// the gate injects into its agent steps.
+	cfg.StepInstructions = loadTrustedStepInstructions(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent
