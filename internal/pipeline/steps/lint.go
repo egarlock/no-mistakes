@@ -32,7 +32,7 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			}
 		}
 		sctx.Log("no lint command configured, asking agent to lint and fix...")
-		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + stepInstructionsPromptSection(sctx)
 		prompt := fmt.Sprintf(
 			`Detect the linting and formatting tools for this project, run the relevant checks yourself, apply safe fixes, and verify the result.
 
@@ -108,7 +108,7 @@ Previous lint findings to address:
 	// In fix mode, ask agent to fix lint issues first
 	var fixSummary string
 	if sctx.Fixing {
-		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + stepInstructionsPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Fix the lint issues in this repository. Run the linter, identify all issues, and fix them.
 
