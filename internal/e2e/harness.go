@@ -425,6 +425,29 @@ func (h *Harness) UpstreamBranchSHA(branch string) string {
 	return string(bytes.TrimSpace(sha))
 }
 
+// OriginBranchLog returns the one-line commit log of a branch on the upstream
+// (gate) repository, newest first.
+func (h *Harness) OriginBranchLog(branch string) string {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := h.runGit(ctx, h.UpstreamDir, "log", "--oneline", "refs/heads/"+branch)
+	if err != nil {
+		h.t.Fatalf("git log upstream %s: %v\n%s", branch, err, out)
+	}
+	return string(out)
+}
+
+// OriginBranchHasFile reports whether path exists in the tree at the tip of a
+// branch on the upstream (gate) repository.
+func (h *Harness) OriginBranchHasFile(branch, path string) bool {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := h.runGit(ctx, h.UpstreamDir, "cat-file", "-e", "refs/heads/"+branch+":"+path)
+	return err == nil
+}
+
 func (h *Harness) AddWorktree(branch string) string {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

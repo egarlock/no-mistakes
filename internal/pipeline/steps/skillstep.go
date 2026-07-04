@@ -11,10 +11,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// SkillModeReview is the only skill mode PR3 ships: a read-only findings pass.
-// The step enforces the read-only contract by resetting the worktree if the
-// skill agent dirties it (see the worktree guard in Execute).
+// SkillModeReview is a read-only findings pass. The step enforces the read-only
+// contract by resetting the worktree if the skill agent dirties it (see the
+// worktree guard in Execute).
 const SkillModeReview = "review"
+
+// SkillModeRevise lets the skill mutate the worktree: it applies safe revisions
+// directly, re-reviews its own result, and the step commits whatever it changed
+// through commitAgentFixes (the exact path document/lint/fix-rounds use), so the
+// HeadSHA + local branch ref advance identically and the push step's force-push
+// lease stays intact. A mode: revise step must be ordered before push
+// (BuildPipeline enforces this) or its commits would never reach the remote.
+const SkillModeRevise = "revise"
 
 // SkillStep is a skill-driven validation step: the built-in review machinery
 // (a prompt template + a findings JSON schema handed to the agent) with the
@@ -33,8 +41,13 @@ type SkillStep struct {
 	// resolved at the default-branch SHA. Empty means it could not be loaded,
 	// which fails closed (the step parks with a misconfiguration finding).
 	SkillBody string
-	// Mode is the skill execution mode. PR3 supports only "review" (read-only).
+	// Mode is the skill execution mode: "review" (or "", read-only) or "revise"
+	// (may edit + commit, then re-review).
 	Mode string
+	// RequireReview, on a revise-mode step, forces a park with the committed diff
+	// after any mutation so the revision is approved before the pipeline
+	// continues. No effect in review mode.
+	RequireReview bool
 	// AutoFix mirrors the built-in review knob: findings default to parking
 	// (auto_fix: 0) unless the maintainer opts in.
 	AutoFix bool
@@ -95,6 +108,15 @@ func (s *SkillStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, 
 			Findings:   string(empty),
 			FixSummary: fixSummary,
 		}, nil
+	}
+
+	// Revise mode (non-fixing pass): the skill is allowed to mutate the worktree.
+	// It applies safe revisions, re-reviews its own result, and we commit
+	// whatever it changed. A fix round (sctx.Fixing) never lands here — it went
+	// through runFix above and falls through to the read-only confirmation review
+	// below, exactly like review mode.
+	if s.Mode == SkillModeRevise && !sctx.Fixing {
+		return s.runRevise(sctx, branch, baseSHA, reviewScope, ignorePatterns)
 	}
 
 	sctx.Log(fmt.Sprintf("running %s skill review...", s.StepName))
@@ -232,6 +254,114 @@ Output contract:
   - "auto-fix": the finding is a non-functional, non user-visible issue (correctness, error handling, security, performance, mechanical code quality) that can be safely fixed without any discussion about the author's intent.
   - "no-op": the finding is informational and does not require any action (e.g. noting a pattern, acknowledging a tradeoff).
 - If the change is clean, return an empty findings array.`,
+		string(s.StepName),
+		branch,
+		baseSHA,
+		sctx.Run.HeadSHA,
+		reviewScope,
+		sctx.Repo.DefaultBranch,
+		ignorePatterns,
+		historySection,
+		skillGuidanceSection(s.SkillBody),
+	)
+}
+
+// runRevise executes a revise-mode pass: the skill agent is allowed to edit the
+// worktree, applies safe revisions, re-reviews its own result, and returns the
+// findings it did NOT resolve plus a one-line commit summary. The step then
+// commits whatever changed through commitAgentFixes — the exact commit protocol
+// document/lint/fix-rounds use, which advances sctx.Run.HeadSHA, persists it,
+// and updates the local branch ref. Keeping this protocol identical is what
+// lets the later push step's force-push lease stay intact: the revise commit is
+// just additional local history the run knowingly built on its own base, never
+// a clobber of unseen upstream work.
+func (s *SkillStep) runRevise(sctx *pipeline.StepContext, branch, baseSHA, reviewScope, ignorePatterns string) (*pipeline.StepOutcome, error) {
+	ctx := sctx.Ctx
+	sctx.Log(fmt.Sprintf("running %s skill revision...", s.StepName))
+
+	prompt := s.revisePrompt(sctx, branch, baseSHA, reviewScope, ignorePatterns)
+	headBefore := sctx.Run.HeadSHA
+
+	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+		Prompt:     prompt,
+		CWD:        sctx.WorkDir,
+		JSONSchema: findingsSchema,
+		OnChunk:    sctx.LogChunk,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent skill revise %s: %w", s.StepName, err)
+	}
+
+	var findings Findings
+	if result.Output != nil {
+		if err := json.Unmarshal(result.Output, &findings); err != nil {
+			sctx.Log("could not parse structured output, using text response")
+			findings = Findings{Summary: result.Text}
+		}
+	}
+
+	// Commit whatever the skill revised. The summary field doubles as the commit
+	// subject (mirroring the document step). commitAgentFixes is a no-op when the
+	// worktree is clean, so a revise pass that changed nothing advances nothing.
+	commitMsg := strings.TrimSpace(findings.Summary)
+	if err := commitAgentFixes(sctx, s.Name(), commitMsg, fmt.Sprintf("apply %s skill revisions", s.StepName)); err != nil {
+		return nil, err
+	}
+	mutated := sctx.Run.HeadSHA != headBefore
+
+	needsApproval := hasBlockingFindings(findings.Items)
+
+	// require_review forces a park with the committed diff after any mutation so
+	// a human/agent approves the revision before the pipeline continues. Attach a
+	// finding pointing at the exact commit range so the gate shows why it parked.
+	if s.RequireReview && mutated {
+		needsApproval = true
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			Description: fmt.Sprintf("revise skill %q committed changes (%s..%s); review the diff before continuing", s.StepName, shortSHA(headBefore), shortSHA(sctx.Run.HeadSHA)),
+			Action:      types.ActionAskUser,
+		})
+	}
+
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: needsApproval,
+		AutoFixable:   len(findings.Items) > 0,
+		Findings:      string(findingsJSON),
+	}, nil
+}
+
+// revisePrompt composes the same three layers as reviewPrompt, but the output
+// contract instructs the agent to apply safe revisions directly and then
+// re-review its own result, rather than change nothing.
+func (s *SkillStep) revisePrompt(sctx *pipeline.StepContext, branch, baseSHA, reviewScope, ignorePatterns string) string {
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + stepInstructionsPromptSection(sctx)
+	return fmt.Sprintf(
+		`Run the %q skill-driven revision. You MAY edit files: apply safe revisions directly, then re-review your own result.
+
+Context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+- review scope: %s
+- default branch: %s
+- ignore patterns: %s
+
+Read the relevant history and diff yourself, then follow the repository skill guidance below.%s
+
+%s
+
+Output contract:
+- Apply the safe revisions the skill guidance calls for directly to the files. Keep edits minimal and root-cause; do not do unrelated refactoring.
+- After revising, re-review your own result and report ONLY the findings you did NOT resolve (issues that need human judgment or that you could not safely fix). Do not report anything you already fixed.
+- Anchor every finding to a specific file and one-indexed line number when possible.
+- Use severity "error" for problems that should absolutely not get merged, "warning" for things worth addressing but that can follow up, and "info" for nice-to-haves.
+- For each remaining finding, set the action field to one of:
+  - "ask-user": the finding is about functional requirements or product behavior, or otherwise challenges the author's deliberate intent. When in doubt, default to "ask-user".
+  - "auto-fix": a non-functional, non user-visible issue that can be safely fixed without discussion about the author's intent.
+  - "no-op": informational only, no action required.
+- Set the "summary" field to a single concise sentence fragment suitable for a git commit subject (under 10 words) describing the revisions you applied.
+- If you resolved everything, return an empty findings array (but still set summary to describe your revisions).`,
 		string(s.StepName),
 		branch,
 		baseSHA,
