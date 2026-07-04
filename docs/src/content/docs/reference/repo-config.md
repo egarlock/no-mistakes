@@ -295,7 +295,8 @@ steps:
 |---|---|---|
 | `name` | `string` | Step identity (lowercase letters, digits, `-`, `_`). Must be unique and must not collide with a built-in step name. |
 | `skill` | `string` | Repo-relative path to the skill markdown file. Its presence marks the entry as a skill step. Must not be absolute or escape the repo. |
-| `mode` | `string` | Skill execution mode. Only `review` (a read-only findings pass) is supported today; omitting it defaults to `review`. |
+| `mode` | `string` | Skill execution mode: `review` (read-only findings pass; the default when omitted) or `revise` (may edit + commit, then re-review — see below). |
+| `require_review` | `bool` | Revise-mode only. When `true` the step parks with the committed diff after any mutation so the revision is approved before the pipeline continues. Default `false`: the revise commit lands silently and the step parks only on unresolved findings (matching the document step). No effect in review mode. |
 | `type` | `string` | Optional explicit kind (`skill` or `command`). Advisory — the entry is a skill step whenever it carries a `skill`. A `type` that disagrees with the payload is an error. |
 | `auto_fix` | `bool` | Optional. When `true` the step's findings are marked auto-fixable. Default `false`: findings park for an agent/human decision, matching the built-in review step. |
 
@@ -305,7 +306,28 @@ The step composes the agent prompt from three fixed layers: (1) an engine-owned 
 
 **Read-only guard (`mode: review`):** a review-mode skill must not change the worktree. After the review pass the step checks `git status --porcelain`; if the skill agent dirtied the tree, the changes are discarded (`git reset --hard` + `git clean -fd`) and a warning finding is recorded ("skill modified the worktree during a review-mode step; changes were discarded"). The read-only contract is enforced, not hoped. When a user chooses `fix` on a skill finding, the follow-up fix round is *allowed* to edit and commits its changes through the normal fix loop — the guard only applies to the read-only review pass.
 
-A starter skill template ships at [`.no-mistakes/skills/review.md`](https://github.com/kunchenguid/no-mistakes/blob/main/.no-mistakes/skills/review.md); copy it and replace the body with your repo's conventions.
+**`mode: revise` (revision + review):** a revise-mode skill *may* edit the worktree. Its output contract instructs the agent to apply safe revisions directly, then re-review its own result and report only the findings it did not resolve, returning a one-line commit summary. After the run the step commits whatever changed through the **same commit protocol** the built-in `document`/`lint` steps and every fix round use (`commitAgentFixes`): it advances the run's head SHA, persists it, and fast-forwards the local branch ref. Because the revise commit is just additional local history the run knowingly built on its own base, it composes with the push step's force-push lease without weakening it. By default the commit lands silently and the step parks only on unresolved findings; set `require_review: true` to force a park with the committed diff after any mutation.
+
+```yaml
+steps:
+  - intent
+  - rebase
+  - review
+  - name: house-style
+    type: skill
+    skill: .no-mistakes/skills/revise.md
+    mode: revise
+    require_review: false   # true forces a park with the diff after any mutation
+  - test
+  - lint
+  - push
+  - pr
+  - ci
+```
+
+**Ordering:** a `mode: revise` step **must** be listed before `push`. Because it mutates and commits, placing it after `push` would mean its commits never reach the remote (and would land a mutating commit after the force-push lease is anchored). Unlike the built-in mutating steps — which only warn when placed after `push` — an out-of-order revise step is a hard configuration error.
+
+Starter skill templates ship at [`.no-mistakes/skills/review.md`](https://github.com/kunchenguid/no-mistakes/blob/main/.no-mistakes/skills/review.md) (read-only) and [`.no-mistakes/skills/revise.md`](https://github.com/kunchenguid/no-mistakes/blob/main/.no-mistakes/skills/revise.md) (revision + review); copy one and replace the body with your repo's conventions.
 
 ### auto_fix
 

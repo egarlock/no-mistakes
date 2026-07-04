@@ -1,11 +1,14 @@
 package steps
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
@@ -244,5 +247,85 @@ func TestForcePushRun_RefusesToClobberOutOfBandBranchCommit(t *testing.T) {
 	}
 	if !fileAtRef(t, upstream, "refs/heads/feature", "approved.txt") {
 		t.Fatalf("approved.txt was discarded from origin on a force-push run - data loss")
+	}
+}
+
+// PR4 revise-mode safety: a mode: revise skill commits through commitAgentFixes,
+// which advances Run.HeadSHA and the local branch ref exactly like the built-in
+// fix path. This must NOT weaken the push step's force-push lease. Here a revise
+// step commits new work on top of the branch, then the push step runs against an
+// origin that advanced out-of-band; the push must still refuse and the upstream
+// commit must survive. This proves the revise commit is just additional local
+// history the run knowingly built, never a lease bypass.
+func TestReviseStepThenPush_PreservesForcePushLease(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	h1 := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature") // last-seen origin == H1, tracking ref set
+
+	// Out-of-band push advances origin/feature with work the worktree never saw.
+	other := t.TempDir()
+	gitCmd(t, other, "clone", upstream, ".")
+	gitCmd(t, other, "config", "user.name", "other")
+	gitCmd(t, other, "config", "user.email", "other@test.com")
+	gitCmd(t, other, "checkout", "feature")
+	os.WriteFile(filepath.Join(other, "upstream.txt"), []byte("landed upstream"), 0o644)
+	gitCmd(t, other, "add", "-A")
+	gitCmd(t, other, "commit", "-m", "landed upstream")
+	advancedSHA := gitCmd(t, other, "rev-parse", "HEAD")
+	gitCmd(t, other, "push", "origin", "feature") // origin == H2 (has upstream.txt)
+
+	// The revise skill mutates the worktree; the step commits it on top of H1.
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "revised.txt"), []byte("skill revision\n"), 0o644)
+			j, _ := json.Marshal(Findings{Items: nil, Summary: "apply house style"})
+			return &agent.Result{Output: j}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, h1, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.HeadSHA = h1
+
+	step := &SkillStep{StepName: "house-style", SkillBody: testReviseBody, Mode: SkillModeRevise}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatalf("revise step: %v", err)
+	}
+	if sctx.Run.HeadSHA == h1 {
+		t.Fatal("expected revise step to commit and advance the head")
+	}
+
+	// Push must refuse: origin advanced out-of-band and the revise head does not
+	// contain that commit. The revise commit did not bypass the lease.
+	if _, err := (&PushStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected push to refuse clobbering advanced upstream branch after a revise commit")
+	}
+
+	originSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if originSHA != advancedSHA {
+		t.Fatalf("origin feature SHA = %s, want %s (upstream commit must be preserved)", originSHA, advancedSHA)
+	}
+	if !fileAtRef(t, upstream, "refs/heads/feature", "upstream.txt") {
+		t.Fatalf("upstream.txt was discarded from origin - a revise commit must not weaken the lease")
 	}
 }

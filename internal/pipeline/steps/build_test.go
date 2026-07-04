@@ -246,7 +246,7 @@ func TestBuildPipeline_SkillStepValidation(t *testing.T) {
 		{"unknown_type", []config.StepSpec{{Name: "sec", Type: "bogus", Skill: "s.md"}}, "unknown type"},
 		{"escaping_path", []config.StepSpec{{Name: "sec", Skill: "../../etc/passwd"}}, "must not escape the repo"},
 		{"absolute_path", []config.StepSpec{{Name: "sec", Skill: "/etc/passwd"}}, "must be repo-relative"},
-		{"unsupported_mode", []config.StepSpec{{Name: "sec", Skill: "s.md", Mode: "revise"}}, "unsupported mode"},
+		{"unsupported_mode", []config.StepSpec{{Name: "sec", Skill: "s.md", Mode: "rewrite"}}, "unsupported mode"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -268,6 +268,74 @@ func TestBuildPipeline_SkillStepModeReviewValid(t *testing.T) {
 		if _, err := BuildPipeline(in); err != nil {
 			t.Errorf("BuildPipeline with mode %q: unexpected error %v", mode, err)
 		}
+	}
+}
+
+// A revise-mode skill step wires RequireReview and Mode through to the built
+// SkillStep.
+func TestBuildPipeline_SkillStepReviseWiring(t *testing.T) {
+	in := []config.StepSpec{
+		{Name: "rebase"},
+		{Name: "house-style", Type: "skill", Skill: ".no-mistakes/skills/revise.md", Mode: "revise", RequireReview: true, SkillBody: "# revise guidance"},
+		{Name: "push"},
+	}
+	built, err := BuildPipeline(in)
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+	ss, ok := built[1].(*SkillStep)
+	if !ok {
+		t.Fatalf("step[1] is %T, want *SkillStep", built[1])
+	}
+	if ss.Mode != SkillModeRevise || !ss.RequireReview || ss.SkillBody != "# revise guidance" {
+		t.Errorf("SkillStep = %+v, want revise config wired through", ss)
+	}
+}
+
+// A mode: revise step must come before push (its commits would never be pushed
+// otherwise, and a post-lease mutating commit breaks the push chain). Unlike the
+// built-in mutating steps this is a hard error, not a warning.
+func TestBuildPipeline_ReviseMustPrecedePush(t *testing.T) {
+	reviseAfterPush := []config.StepSpec{
+		{Name: "rebase"},
+		{Name: "push"},
+		{Name: "house-style", Type: "skill", Skill: ".no-mistakes/skills/revise.md", Mode: "revise", SkillBody: "x"},
+	}
+	_, err := BuildPipeline(reviseAfterPush)
+	if err == nil {
+		t.Fatal("expected error for a revise step after push")
+	}
+	if !strings.Contains(err.Error(), "must come before") || !strings.Contains(err.Error(), "house-style") {
+		t.Errorf("error = %v, want it to reject revise-after-push", err)
+	}
+
+	reviseBeforePush := []config.StepSpec{
+		{Name: "rebase"},
+		{Name: "house-style", Type: "skill", Skill: ".no-mistakes/skills/revise.md", Mode: "revise", SkillBody: "x"},
+		{Name: "push"},
+	}
+	if _, err := BuildPipeline(reviseBeforePush); err != nil {
+		t.Errorf("revise before push should be valid, got %v", err)
+	}
+
+	// A revise step with no push in the pipeline is fine (local-validation-only).
+	reviseNoPush := []config.StepSpec{
+		{Name: "review"},
+		{Name: "house-style", Type: "skill", Skill: ".no-mistakes/skills/revise.md", Mode: "revise", SkillBody: "x"},
+	}
+	if _, err := BuildPipeline(reviseNoPush); err != nil {
+		t.Errorf("revise with no push should be valid, got %v", err)
+	}
+
+	// A review-mode skill after push is only a warning (not this hard error),
+	// since it does not commit.
+	reviewAfterPush := []config.StepSpec{
+		{Name: "rebase"},
+		{Name: "push"},
+		{Name: "sec", Type: "skill", Skill: ".no-mistakes/skills/review.md", Mode: "review", SkillBody: "x"},
+	}
+	if _, err := BuildPipeline(reviewAfterPush); err != nil {
+		t.Errorf("review-mode skill after push should not be a hard error, got %v", err)
 	}
 }
 

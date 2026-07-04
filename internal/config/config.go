@@ -211,10 +211,17 @@ type StepSpec struct {
 	// agent is steered to do, so its path is a trusted-default-branch-only
 	// field and its content is resolved at the trusted SHA (see SkillBody).
 	Skill string
-	// Mode is the skill step's execution mode. PR3 ships only "review" (a
-	// read-only findings pass); "" defaults to "review". "revise" (mutating
-	// skills) is a later addition.
+	// Mode is the skill step's execution mode. "review" (or "", the default) is
+	// a read-only findings pass; "revise" lets the skill mutate the worktree and
+	// commit its revisions before re-reviewing.
 	Mode string
+	// RequireReview, on a revise-mode skill step, forces the step to park with
+	// the committed diff after any mutation so a human/agent approves the
+	// revision before the pipeline continues. Default false: the revise commit
+	// lands silently and the step parks only on unresolved findings, matching
+	// how the document step already behaves. It has no effect on review-mode
+	// skills.
+	RequireReview bool
 	// SkillBody is the resolved content of the Skill file, read by the daemon
 	// at the trusted default-branch SHA (never the pushed worktree). It is not
 	// parsed from YAML — it is populated after load so a skill body can never
@@ -231,15 +238,16 @@ func (s StepSpec) IsSkill() bool { return strings.TrimSpace(s.Skill) != "" }
 // stepSpecYAML is the mapping form of a steps entry. Timeout is a string so it
 // accepts Go duration syntax (e.g. "5m", "90s").
 type stepSpecYAML struct {
-	Name         string   `yaml:"name"`
-	Command      string   `yaml:"command"`
-	FindingsJSON string   `yaml:"findings_json"`
-	Timeout      string   `yaml:"timeout"`
-	AutoFix      bool     `yaml:"auto_fix"`
-	Instructions []string `yaml:"instructions"`
-	Type         string   `yaml:"type"`
-	Skill        string   `yaml:"skill"`
-	Mode         string   `yaml:"mode"`
+	Name          string   `yaml:"name"`
+	Command       string   `yaml:"command"`
+	FindingsJSON  string   `yaml:"findings_json"`
+	Timeout       string   `yaml:"timeout"`
+	AutoFix       bool     `yaml:"auto_fix"`
+	Instructions  []string `yaml:"instructions"`
+	Type          string   `yaml:"type"`
+	Skill         string   `yaml:"skill"`
+	Mode          string   `yaml:"mode"`
+	RequireReview bool     `yaml:"require_review"`
 }
 
 // UnmarshalYAML accepts either a plain scalar built-in step name or a mapping
@@ -267,6 +275,7 @@ func (s *StepSpec) UnmarshalYAML(value *yaml.Node) error {
 		s.Type = strings.TrimSpace(raw.Type)
 		s.Skill = strings.TrimSpace(raw.Skill)
 		s.Mode = strings.TrimSpace(raw.Mode)
+		s.RequireReview = raw.RequireReview
 		if t := strings.TrimSpace(raw.Timeout); t != "" {
 			d, err := time.ParseDuration(t)
 			if err != nil {
@@ -311,6 +320,7 @@ func StepSpecsEqual(a, b []StepSpec) bool {
 			a[i].Type != b[i].Type ||
 			a[i].Skill != b[i].Skill ||
 			a[i].Mode != b[i].Mode ||
+			a[i].RequireReview != b[i].RequireReview ||
 			a[i].SkillBody != b[i].SkillBody ||
 			!slices.Equal(a[i].Instructions, b[i].Instructions) {
 			return false
