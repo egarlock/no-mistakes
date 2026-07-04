@@ -264,6 +264,8 @@ steps:
 
 A mapping with only a `name` (no `command`) is a built-in step; it may still carry `instructions`.
 
+For a worked example — running `xcodebuild test` either as `commands.test` or as a dedicated `ios-test` command step with a `timeout` — see the [iOS / Xcode Testing guide](/no-mistakes/guides/ios-testing/).
+
 #### Per-step instructions
 
 `instructions` lets a repo inject maintainer-authored guidance into the built-in agent steps (for example, review conventions specific to your codebase). The file **contents** are read at the trusted default-branch SHA — never the pushed worktree — and sanitized before injection, so a pushed branch cannot rewrite the guidance the gate injects into its own agent steps. Instruction files absent on the trusted default branch simply contribute nothing. This trusted-SHA read is enforced regardless of `allow_repo_commands`.
