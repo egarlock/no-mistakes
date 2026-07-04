@@ -33,6 +33,14 @@ Safest local verification sequence after non-trivial changes:
 - The backend is pinned against `glab v1.5x`, whose flag surface drifts between versions: the auth check must be host-scoped (`--hostname <host>`, falling back to unscoped only when the host is unknown), `glab mr list` no longer accepts `--state opened`, and the daemon's detached-HEAD worktree breaks `glab ci get`, so pipeline jobs are read via the branch-independent `glab api .../pipelines/<id>/jobs` REST endpoint.
 - The comments in `internal/scm/gitlab/gitlab.go` own the full rationale for each trap; extend them there when you hit new glab version drift.
 
+**GitHub Backend (`internal/scm/github`)**
+
+- `Host.GetChecks` runs `gh pr checks <n> --json name,state,bucket,completedAt` and relies on a subtle `gh` behavior: `gh pr checks` documents special exit codes (non-zero for failing, **exit 8 for pending**), but those are applied **only in table-render mode**. With `--json` the command early-returns via the exporter (`return opts.Exporter.Write(...)`) *before* the exit-code logic, so it exits **0 for passing, failing, AND pending** checks (verified against `gh` v2.95.0, cli/cli `pkg/cmd/pr/checks/checks.go`). The check state is read from the parsed `bucket` field, not the exit code. The only non-zero exits `GetChecks` sees with `--json` are the "no checks reported" case (output contains that string → treated as an empty result, `nil, nil`) and genuine CLI errors (surfaced as an error). Do NOT "fix" `GetChecks` to treat a non-zero exit as failed/pending — that would misclassify the "no checks" case and break on any error. If a future `gh` release starts applying exit 8 in `--json` mode, revisit this. Regression: `TestGetChecksExitConditions` pins pass/fail/pending (exit 0) plus the no-checks and error exits.
+
+**Test-file Detection (`isTestFile`, `internal/pipeline/steps/common_diff.go`)**
+
+- `isTestFile` is **path-based only** (it never reads file contents), so each language is matched by naming/location convention: Go `*_test.go`, Rust `*_test.rs`, Python `test_*`/`*_test.py`, Ruby `test_*.rb`, Java `*Test(s).java`, JS/TS `*.test|spec.{js,ts,jsx,tsx}`, and Swift/XCTest `*Test(s).swift` or any `.swift` under a `Tests/` directory (the SPM layout). XCTest is matched by these path patterns, not by scanning for `XCTestCase`. `detectNewTestFiles` uses this to flag agent-authored test files at the gate. Regression: `TestIsTestFile`.
+
 **Documentation**
 
 - Keep `README.md` concise and high-level; the bar needs to be extremely high for what shows up there.
