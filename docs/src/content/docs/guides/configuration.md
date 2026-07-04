@@ -51,6 +51,10 @@ Everything else can usually wait.
 The reference pages own each field's syntax, defaults, and exact semantics.
 The rest of this page covers only the cross-cutting rules that involve both files at once.
 
+## Language- and platform-specific recipes
+
+- [iOS / Xcode Testing](/no-mistakes/guides/ios-testing/) — run `xcodebuild test` through the gate via `commands.test` or a dedicated `ios-test` command step with a `timeout`.
+
 ## Precedence
 
 - Repo config overrides global config field by field: repo `agent` replaces the global `agent` (including a full ordered fallback list), while `auto_fix`, `commit`, `intent`, and `test.evidence` overlay individual fields and fall through to the global default for anything unset (`intent.disabled_readers` adds to the globally disabled readers instead of replacing them).
