@@ -158,6 +158,10 @@ test:
 
 See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full field listing.
 
+## Language- and platform-specific recipes
+
+- [iOS / Xcode Testing](/no-mistakes/guides/ios-testing/) — run `xcodebuild test` through the gate via `commands.test` or a dedicated `ios-test` command step with a `timeout`.
+
 ## Precedence
 
 - Repo `agent` overrides global `agent`.
