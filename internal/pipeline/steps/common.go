@@ -195,10 +195,11 @@ func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 			})
 		case spec.IsSkill():
 			built = append(built, &SkillStep{
-				StepName:  types.StepName(spec.Name),
-				SkillBody: spec.SkillBody,
-				Mode:      spec.Mode,
-				AutoFix:   spec.AutoFix,
+				StepName:      types.StepName(spec.Name),
+				SkillBody:     spec.SkillBody,
+				Mode:          spec.Mode,
+				RequireReview: spec.RequireReview,
+				AutoFix:       spec.AutoFix,
 			})
 		default:
 			built = append(built, builtinStepConstructors[types.StepName(spec.Name)]())
@@ -239,6 +240,19 @@ func validateStepSpecs(specs []config.StepSpec) (errs, warns []string) {
 			continue
 		}
 		pos[name] = i
+	}
+
+	// A mode: revise skill mutates the worktree and commits, so it must run before
+	// push — otherwise its commits never reach the remote, and placing a mutating
+	// commit after the force-push lease is anchored breaks the push chain's
+	// data-loss invariant. Unlike the built-in mutating steps (a warning after
+	// push), an out-of-place revise step is a hard error.
+	if pushPos, ok := pos[types.StepPush]; ok {
+		for i, spec := range specs {
+			if spec.IsSkill() && spec.Mode == SkillModeRevise && i > pushPos {
+				errs = append(errs, fmt.Sprintf("steps[%d]: skill step %q (mode: revise) mutates the worktree and must come before %q; its commits would never be pushed", i, spec.Name, types.StepPush))
+			}
+		}
 	}
 
 	chainErrs, chainWarns := stepChainProblems(pos)
@@ -293,9 +307,9 @@ func validateSkillStepSpec(i int, spec config.StepSpec) (errs []string) {
 		errs = append(errs, fmt.Sprintf("steps[%d]: skill path %q must be repo-relative and must not escape the repo", i, spec.Skill))
 	}
 	switch spec.Mode {
-	case "", SkillModeReview:
+	case "", SkillModeReview, SkillModeRevise:
 	default:
-		errs = append(errs, fmt.Sprintf("steps[%d]: skill step %q has unsupported mode %q (only %q is supported)", i, spec.Name, spec.Mode, SkillModeReview))
+		errs = append(errs, fmt.Sprintf("steps[%d]: skill step %q has unsupported mode %q (supported: %q, %q)", i, spec.Name, spec.Mode, SkillModeReview, SkillModeRevise))
 	}
 	return errs
 }

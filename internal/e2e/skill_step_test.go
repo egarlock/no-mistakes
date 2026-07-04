@@ -154,6 +154,114 @@ func TestSkillStepGateFlow(t *testing.T) {
 	}
 }
 
+// reviseStepsConfig places a mode: revise skill step between review and lint, so
+// the revise step mutates and commits mid-pipeline and the run must continue
+// through the remaining steps to completion.
+const reviseStepsConfig = "steps:\n" +
+	"  - rebase\n" +
+	"  - review\n" +
+	"  - name: house-style\n" +
+	"    type: skill\n" +
+	"    skill: .no-mistakes/skills/revise.md\n" +
+	"    mode: revise\n" +
+	"  - lint\n" +
+	"  - push\n" +
+	"  - pr\n" +
+	"  - ci\n"
+
+const trustedReviseBody = "---\n" +
+	"name: revise\n" +
+	"description: trusted revise skill\n" +
+	"mode: revise\n" +
+	"---\n" +
+	"# Revise\n\nTRUSTED-REVISE-BODY-MARKER: tighten error handling in the changed code.\n"
+
+// reviseRunScenario drives a full run: the revise skill edits a file and returns
+// a commit summary with no unresolved findings; every other agent step reports
+// clean. The revise prompt match is ordered before the catch-all.
+func reviseRunScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "revise-run-scenario.yaml")
+	content := `actions:
+  - match: "Run the \"house-style\" skill-driven revision"
+    text: "applied house style revisions"
+    edits:
+      - path: "revised.txt"
+        new: "tightened error handling\n"
+    structured:
+      findings: []
+      summary: "tighten error handling"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      title: "feat: fakeagent change"
+      body: "## Summary\nfakeagent canned PR body"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write revise run scenario: %v", err)
+	}
+	return path
+}
+
+// TestSkillStepReviseFullRun proves a mode: revise skill step between review and
+// lint mutates the worktree, commits its revision through the standard commit
+// protocol, and the run continues to completion — the committed revision is
+// present in the branch history the run pushed.
+func TestSkillStepReviseFullRun(t *testing.T) {
+	h := NewHarness(t, SetupOpts{
+		Agent:           "claude",
+		Scenario:        reviseRunScenario(t),
+		RepoConfigExtra: reviseStepsConfig,
+		RepoExtraFiles: map[string]string{
+			".no-mistakes/skills/revise.md": trustedReviseBody,
+		},
+	})
+
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	branch := "feature/revise-run"
+	h.CommitChange(branch, "feature.txt", "change to revise\n", "add feature change")
+	h.PushToGate(branch)
+
+	run := h.WaitForRun(branch, 120*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+
+	// The revise step ran and drove the agent with the trusted revise body.
+	step, ok := findStep(run.Steps, "house-style")
+	if !ok {
+		t.Fatalf("revise step missing from run; steps=%v", stepNamesOf(run.Steps))
+	}
+	if step.Status != types.StepStatusCompleted {
+		t.Errorf("revise step status = %q, want completed", step.Status)
+	}
+	if !anyPromptContains(h, "TRUSTED-REVISE-BODY-MARKER") {
+		t.Error("revise prompt never carried the trusted default-branch skill body")
+	}
+	if !anyPromptContains(h, "You MAY edit files") {
+		t.Error("revise step never ran its mutation-permitting prompt")
+	}
+
+	// The revise commit reached the gate branch on origin, with the expected file
+	// and the skill's commit subject.
+	origin := h.OriginBranchLog(branch)
+	if !strings.Contains(origin, "no-mistakes(house-style): tighten error handling") {
+		t.Errorf("revise commit missing from origin branch history:\n%s", origin)
+	}
+	if !h.OriginBranchHasFile(branch, "revised.txt") {
+		t.Error("revised.txt (the skill's revision) never reached the pushed branch")
+	}
+}
+
 // skillGateScenario gates the skill review once (ask-user), then on the fix
 // round edits a file and returns a commit summary, and finally re-reviews
 // clean. Ordering is load-bearing: the fix prompt is matched before the
