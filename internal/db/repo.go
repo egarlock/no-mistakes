@@ -13,7 +13,13 @@ type Repo struct {
 	UpstreamURL   string
 	ForkURL       string
 	DefaultBranch string
-	CreatedAt     int64
+	// LocalProfile is an optional host-local shared-gate-profile binding
+	// (`no-mistakes profile use <name>`). It is authored by the machine owner
+	// via the CLI — never by repo content — so it carries the same trust level
+	// as the global config and takes precedence over the repo config's
+	// `profile:` field. Empty means no binding.
+	LocalProfile string
+	CreatedAt    int64
 }
 
 // PushURL returns the remote URL that should receive branch updates.
@@ -81,8 +87,8 @@ func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch
 func (d *DB) GetRepo(id string) (*Repo, error) {
 	r := &Repo{}
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, COALESCE(local_profile, ''), created_at FROM repos WHERE id = ?`, id,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.LocalProfile, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -96,8 +102,8 @@ func (d *DB) GetRepo(id string) (*Repo, error) {
 func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 	r := &Repo{}
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE working_path = ?`, workingPath,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, COALESCE(local_profile, ''), created_at FROM repos WHERE working_path = ?`, workingPath,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.LocalProfile, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -143,6 +149,19 @@ func (d *DB) UpdateRepoForkURL(id, forkURL string) (*Repo, error) {
 		return nil, fmt.Errorf("update repo fork URL: %w", err)
 	}
 	return d.GetRepo(id)
+}
+
+// SetRepoLocalProfile sets or clears the host-local shared-gate-profile
+// binding for a repo. An empty (or blank) name clears the binding.
+func (d *DB) SetRepoLocalProfile(id, name string) error {
+	_, err := d.sql.Exec(
+		`UPDATE repos SET local_profile = ? WHERE id = ?`,
+		nullableString(name), id,
+	)
+	if err != nil {
+		return fmt.Errorf("set repo local profile: %w", err)
+	}
+	return nil
 }
 
 // UpdateRepoWorkingPath moves a repo record to a new working path, preserving

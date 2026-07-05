@@ -63,10 +63,12 @@ Nothing reaches the configured push target until every check is green.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+git clone git@github.com:kunchenguid/no-mistakes.git
+cd no-mistakes
+make install
 ```
 
-Windows, Go install, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
+Or `go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest`. Windows instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
 
 ## Quick Start
 

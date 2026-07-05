@@ -13,7 +13,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -74,26 +73,6 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	ctx, cancel := context.WithTimeout(sctx.Ctx, intentExtractTimeout)
 	defer cancel()
 
-	startedAt := time.Now()
-	outcomeLabel := "no_match"
-	matchedAgent := ""
-	score := 0.0
-
-	defer func() {
-		fields := telemetry.Fields{
-			"action":      "intent",
-			"outcome":     outcomeLabel,
-			"duration_ms": time.Since(startedAt).Milliseconds(),
-		}
-		if matchedAgent != "" {
-			fields["matched_agent"] = matchedAgent
-		}
-		if score > 0 {
-			fields["score"] = score
-		}
-		telemetry.Track("run", fields)
-	}()
-
 	runFn := s.runIntent
 	if runFn == nil {
 		runFn = defaultRunIntent
@@ -102,22 +81,18 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	result, runErr := runFn(ctx, sctx)
 	if runErr != nil {
 		if errors.Is(runErr, intent.ErrNoMatch) {
-			outcomeLabel = "no_match"
 			sctx.Log("no matching agent transcript found")
 			return &pipeline.StepOutcome{Skipped: true}, nil
 		}
 		if errors.Is(runErr, errIntentEmptyDiff) {
-			outcomeLabel = "empty_diff"
 			sctx.Log("no diff between base and head, skipping intent extraction")
 			return &pipeline.StepOutcome{Skipped: true}, nil
 		}
 		if errors.Is(runErr, intent.ErrDisambiguatorCleanup) {
-			outcomeLabel = "error"
 			sctx.Log(fmt.Sprintf("intent extraction failed: %v", runErr))
 			return nil, runErr
 		}
 		slog.Debug("intent: extract failed", "run_id", sctx.Run.ID, "error", runErr)
-		outcomeLabel = "error"
 		sctx.Log(fmt.Sprintf("intent extraction failed: %v", runErr))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -125,10 +100,6 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 		sctx.Log("no intent attached")
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
-
-	matchedAgent = result.AgentName
-	score = result.Score
-	outcomeLabel = "matched"
 
 	if dbErr := sctx.DB.UpdateRunIntent(sctx.Run.ID, db.RunIntent{
 		Summary:   result.Summary,
@@ -154,13 +125,12 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	sctx.Log("inferred intent:")
 	sctx.Log(intent.RedactSecrets(intent.StripAdversarial(sanitizePromptMultilineText(result.Summary))))
 
-	slog.Info("intent: attached", "run_id", sctx.Run.ID, "agent", matchedAgent, "score", score)
+	slog.Info("intent: attached", "run_id", sctx.Run.ID, "agent", result.AgentName, "score", result.Score)
 	return &pipeline.StepOutcome{}, nil
 }
 
 // errIntentEmptyDiff is returned by defaultRunIntent when the diff between
-// base and head produces no files. It is reported as the "empty_diff"
-// telemetry outcome.
+// base and head produces no files.
 var errIntentEmptyDiff = errors.New("intent: empty diff")
 
 // defaultRunIntent is the production implementation: it derives intent

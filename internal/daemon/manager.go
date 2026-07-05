@@ -23,7 +23,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -292,11 +291,18 @@ func loadTrustedSkillBodies(ctx context.Context, wtDir, trustedSHA string, specs
 // auto-commits is a deliberately deferred design decision; until it is made,
 // mutating skill steps must be defined in a repo's own steps: list.
 func (m *RunManager) loadProfile(name string) (*config.ProfileConfig, string, error) {
+	return LoadProfile(m.paths, name)
+}
+
+// LoadProfile is the shared implementation of loadProfile, exported so the
+// `no-mistakes profile` CLI (use/show/list/lint) validates a profile with the
+// exact rules the daemon enforces at run start, instead of duplicating them.
+func LoadProfile(p *paths.Paths, name string) (*config.ProfileConfig, string, error) {
 	if !steps.ValidCustomName(name) {
 		return nil, "", fmt.Errorf("invalid profile name %q (use lowercase letters, digits, '-' and '_', starting with a letter or digit)", name)
 	}
-	profileDir := m.paths.ProfileDir(name)
-	profilePath := m.paths.ProfileFile(name)
+	profileDir := p.ProfileDir(name)
+	profilePath := p.ProfileFile(name)
 	data, err := os.ReadFile(profilePath)
 	if err != nil {
 		return nil, "", fmt.Errorf("read profile.yaml at %s: %w", profilePath, err)
@@ -328,7 +334,16 @@ func (m *RunManager) loadProfile(name string) (*config.ProfileConfig, string, er
 // is authoritative as usual — including the case where the file is simply
 // absent on the default branch, where no profile is genuinely selected and
 // the pushed value is ignored.
-func unverifiedProfileError(trustedSHA string, pushed *config.RepoConfig) error {
+//
+// A non-empty host-local binding (localProfile, from `no-mistakes profile
+// use`) short-circuits the check: nothing about the binding comes from the
+// repo, so it needs no default-branch verification, and it wins over the
+// repo-config selection anyway. Fail-closed loading of the bound profile
+// itself still happens in resolveProfilePipeline/loadProfile.
+func unverifiedProfileError(localProfile, trustedSHA string, pushed *config.RepoConfig) error {
+	if strings.TrimSpace(localProfile) != "" {
+		return nil
+	}
 	if trustedSHA != "" || pushed == nil {
 		return nil
 	}
@@ -338,12 +353,72 @@ func unverifiedProfileError(trustedSHA string, pushed *config.RepoConfig) error 
 	return nil
 }
 
-// profilePathWithinDir joins a profile-relative file path onto the profile
+// profilePipeline is the resolved outcome of shared-profile selection for a
+// run: the merged step list, the merged step instructions, and the run-record
+// profile stamp ("" when no profile gated the run).
+type profilePipeline struct {
+	steps        []config.StepSpec
+	instructions string
+	stamp        string
+}
+
+// resolveProfilePipeline applies shared-gate-profile selection and composition
+// for a run. Selection precedence: a non-empty host-local binding
+// (repos.local_profile, authored by the machine owner via `no-mistakes profile
+// use`) WINS over the repo config's trusted `profile:` field — both are
+// machine-owner/maintainer-trusted, but the local binding is the more specific,
+// host-side decision and is the only channel available when nothing can be
+// committed to the repo (e.g. work repos). When a profile is selected it is
+// loaded fail-closed (missing/invalid → error, never a silent default
+// pipeline), its skill bodies and instructions resolve profile-relative, and it
+// composes with the repo's steps via ComposeProfileSteps exactly the same way
+// for both selection sources. With no selection, repo steps/instructions pass
+// through unchanged (and a stray `- use: profile` sentinel fails loud).
+func (m *RunManager) resolveProfilePipeline(ctx context.Context, runID, branch, localProfile, trustedProfile string, repoSteps []config.StepSpec, repoInstructions string) (profilePipeline, error) {
+	profileName := strings.TrimSpace(trustedProfile)
+	source := "repo-config"
+	if local := strings.TrimSpace(localProfile); local != "" {
+		if profileName != "" && profileName != local {
+			slog.Info("host-local profile binding overrides repo-config profile", "run_id", runID, "branch", branch, "local_profile", local, "repo_config_profile", profileName)
+		}
+		profileName = local
+		source = "local-binding"
+	}
+
+	if profileName == "" {
+		// No profile selected: a `- use: profile` splice sentinel is meaningless
+		// and must not silently pass through as a nameless step.
+		if config.HasProfileSplice(repoSteps) {
+			return profilePipeline{}, fmt.Errorf("repo steps: use `- use: profile` but no profile is selected (no host-local binding and none on the trusted default branch)")
+		}
+		return profilePipeline{steps: repoSteps, instructions: repoInstructions}, nil
+	}
+
+	profile, profileDir, err := m.loadProfile(profileName)
+	if err != nil {
+		return profilePipeline{}, fmt.Errorf("load profile %q: %w", profileName, err)
+	}
+	profileSteps := loadProfileSkillBodies(profileDir, profile.Steps, runID)
+	profileInstructions := loadProfileStepInstructions(profileDir, profile.Steps, runID)
+	mergedSteps, err := config.ComposeProfileSteps(repoSteps, profileSteps)
+	if err != nil {
+		return profilePipeline{}, fmt.Errorf("compose profile %q: %w", profileName, err)
+	}
+	stamp := profileStamp(ctx, profileName, profileDir, m.paths.ProfileFile(profileName))
+	slog.Info("run gated by shared profile", "run_id", runID, "profile", stamp, "profile_source", source, "profile_dir", profileDir, "profile_version", profile.Version, "branch", branch)
+	return profilePipeline{
+		steps:        mergedSteps,
+		instructions: joinInstructionSections(profileInstructions, repoInstructions),
+		stamp:        stamp,
+	}, nil
+}
+
+// ProfilePathWithinDir joins a profile-relative file path onto the profile
 // directory and confirms the result does not escape it (defense in depth: the
 // merged step list is also validated by validateStepSpecs, which rejects
 // absolute paths and ".."). It returns the cleaned absolute path and whether it
 // is safe to read.
-func profilePathWithinDir(profileDir, rel string) (string, bool) {
+func ProfilePathWithinDir(profileDir, rel string) (string, bool) {
 	if strings.TrimSpace(rel) == "" || filepath.IsAbs(rel) {
 		return "", false
 	}
@@ -372,7 +447,7 @@ func loadProfileSkillBodies(profileDir string, specs []config.StepSpec, runID st
 		if !resolved[i].IsSkill() {
 			continue
 		}
-		full, ok := profilePathWithinDir(profileDir, resolved[i].Skill)
+		full, ok := ProfilePathWithinDir(profileDir, resolved[i].Skill)
 		if !ok {
 			slog.Warn("profile skill step: path escapes profile dir; step will park", "run_id", runID, "profile_dir", profileDir, "path", resolved[i].Skill)
 			resolved[i].SkillBody = ""
@@ -405,7 +480,7 @@ func loadProfileStepInstructions(profileDir string, specs []config.StepSpec, run
 				continue
 			}
 			seen[path] = true
-			full, ok := profilePathWithinDir(profileDir, path)
+			full, ok := ProfilePathWithinDir(profileDir, path)
 			if !ok {
 				slog.Warn("profile step instructions: path escapes profile dir; skipping", "run_id", runID, "profile_dir", profileDir, "path", path)
 				continue
@@ -537,18 +612,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
-	trackStartFailure := func(stage string) {
-		telemetry.Track("run", telemetry.Fields{
-			"action":      "start_failed",
-			"trigger":     trigger,
-			"branch_role": branchRole,
-			"stage":       stage,
-		})
-	}
-
 	if m.shuttingDown.Load() {
-		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
 	}
 
@@ -566,7 +630,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Create run record.
 	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
 	if err != nil {
-		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
@@ -591,12 +654,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
-		trackStartFailure("create_worktree")
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
-		trackStartFailure("configure_worktree_identity")
 		return "", fmt.Errorf("configure worktree git identity: %w", err)
 	}
 	// Fetch the trusted default branch and resolve it to an exact commit SHA
@@ -633,13 +694,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
-		trackStartFailure("load_global_config")
 		return "", fmt.Errorf("load global config: %w", err)
 	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
-		trackStartFailure("load_repo_config")
 		return "", fmt.Errorf("load repo config: %w", err)
 	}
 	// SECURITY: load the code-executing selection fields (commands.*, agent,
@@ -660,10 +719,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	// Fail closed on an unverifiable profile selection: with no trusted SHA a
 	// selected shared gate must stop the run, never silently degrade to the
-	// default pipeline.
-	if err := unverifiedProfileError(trustedSHA, repoCfg); err != nil {
+	// default pipeline. A host-local binding (repo.LocalProfile) is exempt —
+	// it is machine-owner-authored, nothing about it comes from the repo, and
+	// it wins over the repo-config selection anyway.
+	if err := unverifiedProfileError(repo.LocalProfile, trustedSHA, repoCfg); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
-		trackStartFailure("load_profile")
 		return "", err
 	}
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
@@ -685,48 +745,28 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	repoInstructions := loadTrustedStepInstructions(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
 	repoSteps := loadTrustedSkillBodies(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
 
-	// Shared gate profile (trusted-only field). When selected, its steps —
-	// resolved profile-relative from <NM_HOME>/profiles/<name>/ (host-local
-	// disk, never the worktree) — compose with the repo's steps and become the
-	// pipeline. A missing/unparsable profile, or a bad composition, fails the
-	// run at start: a team gate must never silently drop to the default
-	// pipeline.
-	if profileName := strings.TrimSpace(effectiveRepoCfg.Profile); profileName != "" {
-		profile, profileDir, err := m.loadProfile(profileName)
-		if err != nil {
-			m.db.UpdateRunError(run.ID, fmt.Sprintf("load profile: %s", err))
-			trackStartFailure("load_profile")
-			return "", fmt.Errorf("load profile %q: %w", profileName, err)
-		}
-		profileSteps := loadProfileSkillBodies(profileDir, profile.Steps, run.ID)
-		profileInstructions := loadProfileStepInstructions(profileDir, profile.Steps, run.ID)
-		mergedSteps, err := config.ComposeProfileSteps(repoSteps, profileSteps)
-		if err != nil {
-			m.db.UpdateRunError(run.ID, fmt.Sprintf("compose profile steps: %s", err))
-			trackStartFailure("compose_profile")
-			return "", fmt.Errorf("compose profile %q: %w", profileName, err)
-		}
-		cfg.Steps = mergedSteps
-		cfg.StepInstructions = joinInstructionSections(profileInstructions, repoInstructions)
-		stamp := profileStamp(ctx, profileName, profileDir, m.paths.ProfileFile(profileName))
-		if err := m.db.SetRunProfile(run.ID, stamp); err != nil {
+	// Shared gate profile. Selected either by the host-local binding
+	// (repo.LocalProfile, set via `no-mistakes profile use` — wins, and works
+	// with ZERO files committed to the repo) or by the repo config's trusted
+	// `profile:` field. Its steps — resolved profile-relative from
+	// <NM_HOME>/profiles/<name>/ (host-local disk, never the worktree) —
+	// compose with the repo's steps and become the pipeline. A
+	// missing/unparsable profile, or a bad composition, fails the run at
+	// start: a team gate must never silently drop to the default pipeline.
+	pp, err := m.resolveProfilePipeline(ctx, run.ID, branch, repo.LocalProfile, effectiveRepoCfg.Profile, repoSteps, repoInstructions)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		return "", err
+	}
+	cfg.Steps = pp.steps
+	cfg.StepInstructions = pp.instructions
+	if pp.stamp != "" {
+		if err := m.db.SetRunProfile(run.ID, pp.stamp); err != nil {
 			slog.Warn("failed to stamp run profile", "run_id", run.ID, "error", err)
 		} else {
-			profileCopy := stamp
+			profileCopy := pp.stamp
 			run.Profile = &profileCopy
 		}
-		slog.Info("run gated by shared profile", "run_id", run.ID, "profile", stamp, "profile_dir", profileDir, "profile_version", profile.Version, "branch", branch)
-	} else {
-		// No profile selected: a `- use: profile` splice sentinel is meaningless
-		// and must not silently pass through as a nameless step.
-		if config.HasProfileSplice(repoSteps) {
-			err := fmt.Errorf("repo steps: use `- use: profile` but no profile is selected on the trusted default branch")
-			m.db.UpdateRunError(run.ID, err.Error())
-			trackStartFailure("compose_profile")
-			return "", err
-		}
-		cfg.Steps = repoSteps
-		cfg.StepInstructions = repoInstructions
 	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
@@ -736,7 +776,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	} else {
 		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
-			trackStartFailure("resolve_agent")
 			return "", err
 		}
 		var agErr error
@@ -745,7 +784,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		})
 		if agErr != nil {
 			m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent: %s", agErr))
-			trackStartFailure("create_agent")
 			return "", fmt.Errorf("create agent: %w", agErr)
 		}
 		// Steer every pipeline agent to keep writes inside the worktree and
@@ -757,17 +795,8 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	execSteps, err := m.steps(cfg)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("build pipeline steps: %s", err))
-		trackStartFailure("build_steps")
 		return "", fmt.Errorf("build pipeline steps: %w", err)
 	}
-	telemetry.Track("run", telemetry.Fields{
-		"action":      "started",
-		"trigger":     trigger,
-		"agent":       string(cfg.Agent),
-		"branch_role": branchRole,
-		"step_count":  len(execSteps),
-		"demo_mode":   steps.IsDemoMode(),
-	})
 
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
@@ -788,7 +817,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Launch pipeline in background.
 	m.wg.Add(1)
 	go func() {
-		startedAt := time.Now()
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
@@ -797,20 +825,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 				slog.Error("panic in pipeline goroutine", "run_id", run.ID, "panic", r)
 				run.Status = types.RunFailed
 				run.Error = &errMsg
-				fields := telemetry.Fields{
-					"action":      "finished",
-					"trigger":     trigger,
-					"agent":       string(cfg.Agent),
-					"branch_role": branchRole,
-					"status":      string(run.Status),
-					"duration_ms": time.Since(startedAt).Milliseconds(),
-					"step_count":  len(execSteps),
-					"pr_created":  run.PRURL != nil && *run.PRURL != "",
-				}
-				if failedStep := telemetryFailedStepName(m.db, run.ID); failedStep != "" {
-					fields["failed_step"] = failedStep
-				}
-				telemetry.Track("run", fields)
 				if dbErr := m.db.UpdateRunErrorStatus(run.ID, errMsg, types.RunFailed); dbErr != nil {
 					slog.Error("failed to update run after panic", "run_id", run.ID, "error", dbErr)
 				}
@@ -832,60 +846,13 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		}()
 
 		if err := executor.Execute(runCtx, run, repo, wtDir); err != nil {
-			fields := telemetry.Fields{
-				"action":      "finished",
-				"trigger":     trigger,
-				"agent":       string(cfg.Agent),
-				"branch_role": branchRole,
-				"status":      string(run.Status),
-				"duration_ms": time.Since(startedAt).Milliseconds(),
-				"step_count":  len(execSteps),
-				"pr_created":  run.PRURL != nil && *run.PRURL != "",
-			}
-			if failedStep := telemetryFailedStepName(m.db, run.ID); failedStep != "" {
-				fields["failed_step"] = failedStep
-			}
-			telemetry.Track("run", fields)
 			slog.Error("pipeline failed", "run_id", run.ID, "error", err)
 		} else {
-			telemetry.Track("run", telemetry.Fields{
-				"action":      "finished",
-				"trigger":     trigger,
-				"agent":       string(cfg.Agent),
-				"branch_role": branchRole,
-				"status":      string(run.Status),
-				"duration_ms": time.Since(startedAt).Milliseconds(),
-				"step_count":  len(execSteps),
-				"pr_created":  run.PRURL != nil && *run.PRURL != "",
-			})
 			slog.Info("pipeline completed", "run_id", run.ID)
 		}
 	}()
 
 	return run.ID, nil
-}
-
-func telemetryBranchRole(branch, defaultBranch string) string {
-	if branch == "" {
-		return "unknown"
-	}
-	if defaultBranch != "" && branch == defaultBranch {
-		return "default"
-	}
-	return "feature"
-}
-
-func telemetryFailedStepName(database *db.DB, runID string) string {
-	steps, err := database.GetStepsByRun(runID)
-	if err != nil {
-		return ""
-	}
-	for _, step := range steps {
-		if step.Status == types.StepStatusFailed {
-			return string(step.StepName)
-		}
-	}
-	return ""
 }
 
 // HandleRespond routes a user approval action to the executor for the given run.

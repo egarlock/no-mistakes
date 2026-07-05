@@ -28,11 +28,13 @@ Initialize or refresh the gate for the current repository.
 ```sh
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
+no-mistakes init --profile team-ios
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--fork-url` | `string` | (none) | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| `--profile` | `string` | (none) | Shared gate profile to bind this repo to (host-local binding, equivalent to `no-mistakes profile use <name>` after init) |
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
@@ -285,6 +287,57 @@ Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem 
 
 `doctor` checks `gh` and `az` availability. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`. For Azure DevOps PR and CI steps, install the `azure-devops` extension and provide a PAT.
 
+## no-mistakes profile
+
+Manage [shared gate profiles](/no-mistakes/guides/shared-profiles/) and the current repo's host-local binding.
+
+### no-mistakes profile use
+
+Bind the current repo to a shared gate profile, host-locally — nothing is committed to the repo.
+
+```sh
+no-mistakes profile use team-ios
+no-mistakes profile use --clear
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--clear` | `bool` | `false` | Remove the host-local profile binding for the current repo |
+
+Stores a repo → profile binding in the local no-mistakes database. From then on, the profile under `<NM_HOME>/profiles/<name>/` gates every run for this repo. The binding **overrides** the repo config's `profile:` field — it is authored by the machine owner, so it carries the same trust level as the global config — and works for repos with no `.no-mistakes.yaml` at all (e.g. work repos where committing tool config is not an option).
+
+If the named profile is missing or invalid, `use` **warns but still stores the binding**: the daemon fails closed at run start, so runs for the repo fail until the profile is fixed — never silently falling back to the default pipeline.
+
+### no-mistakes profile show
+
+Show the current repo's profile selection and which source wins.
+
+```sh
+no-mistakes profile show
+```
+
+Prints the host-local binding, the `profile:` field from the repo's working-tree `.no-mistakes.yaml` (at run time the daemon enforces the trusted default-branch copy), and the effective selection. A host-local binding wins over the repo-config field.
+
+### no-mistakes profile list
+
+List shared gate profiles under `<NM_HOME>/profiles/`.
+
+```sh
+no-mistakes profile list
+```
+
+Each profile is marked valid (with its version and step count) or invalid (with the load error), using the same fail-closed load rules the daemon applies at run start.
+
+### no-mistakes profile lint
+
+Validate a profile with the daemon's run-start rules.
+
+```sh
+no-mistakes profile lint team-ios
+```
+
+Checks that `profile.yaml` parses (unknown keys rejected), defines at least one step, carries no `mode: revise` skill steps, and passes the same step validation the pipeline builder applies (unique names, push-chain ordering, custom-step rules). Also verifies that every `skill:` and `instructions:` path stays inside the profile directory and exists on disk. Exits non-zero and lists every issue when the profile would fail (or park steps) at run time.
+
 ## no-mistakes update
 
 Update the installed binary and reset the daemon.
@@ -304,8 +357,6 @@ Pass `-y` or `--yes` to continue through update safety prompts while still print
 If the daemon executable path cannot be determined, the update aborts before replacement.
 If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
 On macOS, removes the quarantine extended attribute.
-
-Because `update` installs the latest official release binary, the replacement binary includes the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
 Background update checks run automatically on each CLI invocation (except `update` itself). If a newer version is available, a notification is printed to stderr. Suppressed for dev builds or when `NO_MISTAKES_NO_UPDATE_CHECK=1` is set.
 
