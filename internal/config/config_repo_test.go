@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -96,6 +97,42 @@ func TestLoadRepo_PartialCommands(t *testing.T) {
 	}
 	if cfg.Commands.Format != "" {
 		t.Errorf("format = %q, want empty", cfg.Commands.Format)
+	}
+}
+
+// An unknown top-level key must fail loudly, matching the global-config and
+// profile.yaml posture: a typo'd `comands:` would otherwise silently drop the
+// test command and weaken the gate.
+func TestLoadRepo_UnknownKeyFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	if err := os.WriteFile(path, []byte("comands:\n  test: go test ./...\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadRepo(dir)
+	if err == nil {
+		t.Fatal("expected error for unknown top-level key")
+	}
+	if !strings.Contains(err.Error(), "comands") {
+		t.Errorf("error %q does not name the unknown key", err)
+	}
+}
+
+// An empty .no-mistakes.yaml is legal and parses to the zero config.
+func TestLoadRepo_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "" || cfg.Commands.Test != "" || cfg.Steps != nil {
+		t.Errorf("empty file should parse to zero config, got %+v", cfg)
 	}
 }
 
