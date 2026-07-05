@@ -195,6 +195,13 @@ type stepSpecYAML struct {
 	Use           string   `yaml:"use"`
 }
 
+// stepSpecKnownKeys is the legal key set of a steps mapping entry, mirroring
+// stepSpecYAML's yaml tags; UnmarshalYAML rejects anything else.
+var stepSpecKnownKeys = []string{
+	"name", "command", "findings_json", "timeout", "auto_fix",
+	"instructions", "type", "skill", "mode", "require_review", "use",
+}
+
 // UnmarshalYAML accepts either a plain scalar built-in step name or a mapping
 // (per-step options / custom command step). Any other node kind is rejected
 // with a clear error rather than silently misparsed.
@@ -208,6 +215,15 @@ func (s *StepSpec) UnmarshalYAML(value *yaml.Node) error {
 		s.Name = strings.TrimSpace(name)
 		return nil
 	case yaml.MappingNode:
+		// value.Decode bypasses the outer decoder's KnownFields, so unknown
+		// keys are rejected by hand: a typo'd `timout:` or `findings-json:`
+		// must fail loudly, not silently weaken the step.
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			key := strings.TrimSpace(value.Content[i].Value)
+			if !slices.Contains(stepSpecKnownKeys, key) {
+				return fmt.Errorf("parse repo config: steps entry (line %d): unknown key %q", value.Content[i].Line, key)
+			}
+		}
 		var raw stepSpecYAML
 		if err := value.Decode(&raw); err != nil {
 			return fmt.Errorf("parse repo config: steps entry (line %d): %w", value.Line, err)
@@ -780,7 +796,12 @@ func LoadRepoFromBytes(data []byte) (*RepoConfig, error) {
 
 func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	cfg := &RepoConfig{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	// KnownFields matches the global-config and profile.yaml posture: a
+	// typo'd key (`comands:`) must fail loudly, not silently drop the field
+	// and weaken the gate.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if cfg.AutoFix.CI == nil {

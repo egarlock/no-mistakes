@@ -18,7 +18,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 )
 
 var applyShellEnvToProcess = shellenv.ApplyToProcess
@@ -115,12 +114,6 @@ func RunWithResources(p *paths.Paths, d *db.DB) error {
 // RunWithOptions starts the daemon with optional overrides.
 // stepFactory overrides the default pipeline steps (for testing).
 func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
-		defer cancel()
-		_ = telemetry.Close(ctx)
-	}()
-
 	// Recover stale runs from a previous daemon crash.
 	recoverOnStartup(d, p)
 

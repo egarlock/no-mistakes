@@ -17,7 +17,7 @@ type Match struct {
 	// recency. Score remains the raw file-overlap score surfaced to callers.
 	Confidence float64
 	// Overlap lists diff files that appeared in this session. Used purely
-	// for diagnostics/telemetry.
+	// for diagnostics.
 	Overlap []string
 }
 

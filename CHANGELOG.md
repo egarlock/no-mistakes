@@ -620,7 +620,7 @@
 * **ci:** handle merge conflicts in babysit and harden mergeability checks ([#69](https://github.com/kunchenguid/no-mistakes/issues/69)) ([9e86144](https://github.com/kunchenguid/no-mistakes/commit/9e861448314cc4ccddd259e5acd1f1bd03ec73ba))
 * **pipeline:** rename follow-up fix rounds to auto-fix ([#73](https://github.com/kunchenguid/no-mistakes/issues/73)) ([23e92a8](https://github.com/kunchenguid/no-mistakes/commit/23e92a826ea635c2614ab497ca729f500323b210))
 * **tui:** use available height for stacked log tail ([#68](https://github.com/kunchenguid/no-mistakes/issues/68)) ([4a5a99a](https://github.com/kunchenguid/no-mistakes/commit/4a5a99ab9484eba0091c17294891138e8d89ff6a))
-* updater self-update and install.sh for user-owned paths on macOS ([#66](https://github.com/kunchenguid/no-mistakes/issues/66)) ([119665e](https://github.com/kunchenguid/no-mistakes/commit/119665e8843ffb0360feea9ef74f59f803a5a34c))
+* updater self-update and the install script for user-owned paths on macOS ([#66](https://github.com/kunchenguid/no-mistakes/issues/66)) ([119665e](https://github.com/kunchenguid/no-mistakes/commit/119665e8843ffb0360feea9ef74f59f803a5a34c))
 * **update:** reset daemon after self-update and document failure handling ([#70](https://github.com/kunchenguid/no-mistakes/issues/70)) ([c1001d8](https://github.com/kunchenguid/no-mistakes/commit/c1001d8da5e12e5c51069b84752b4cf298617fde))
 
 ## [1.1.1](https://github.com/kunchenguid/no-mistakes/compare/v1.1.0...v1.1.1) (2026-04-15)

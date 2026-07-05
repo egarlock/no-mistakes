@@ -11,7 +11,7 @@ import (
 )
 
 // retryClassifier inspects an error and reports whether it should be retried,
-// returning a short human-readable label for telemetry.
+// returning a short human-readable label for logging.
 type retryClassifier func(error) (label string, retry bool)
 
 // transientBackoff is the package-level sleep function used between retries.
