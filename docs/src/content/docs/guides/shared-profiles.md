@@ -57,6 +57,12 @@ steps:
 profile directory**, and must not escape it. The bodies are read from
 host-local disk, never from a repo worktree.
 
+Skill steps in a profile must use `mode: review`. A `mode: revise` step —
+which mutates worktrees and auto-commits — is **rejected at profile load** and
+fails the run at start: one profile edit silently rewriting code across every
+repo pointing at it is a blast radius v1 deliberately does not take on. Define
+revise-mode steps in a repo's own `steps:` list instead.
+
 ## Selecting a profile in a repo
 
 Add one line to the repo's `.no-mistakes.yaml` on the **default branch**:
@@ -94,11 +100,23 @@ push-chain ordering).
 
 ## Fail-closed behavior
 
-A profile is a team gate, so a **missing or unparsable profile fails the run at
-start** rather than silently dropping to the default pipeline. A host that has
-not provisioned the profile directory cannot gate that repo until it does. (A
-missing skill *file* inside an otherwise-valid profile parks the individual
-skill step with a misconfiguration finding, matching built-in skill steps.)
+A profile is a team gate, so a broken one **fails the run at start** rather
+than silently dropping to the default pipeline:
+
+- a **missing or unparsable** `profile.yaml` (a host that has not provisioned
+  the profile directory cannot gate that repo until it does);
+- a profile.yaml with an **unknown key** — `profile.yaml` has exactly two legal
+  keys (`version`, `steps`), so a typo like `step:` fails loudly instead of
+  parsing to zero steps;
+- a profile that **defines no steps** — an empty steps list would otherwise be
+  indistinguishable from "no `steps:` configured" and silently run the default
+  pipeline in place of the shared gate;
+- a profile step with **`mode: revise`** (see above);
+- a **default-branch fetch failure** on a repo that names a profile — the
+  selection cannot be verified, so the run stops instead of running ungated.
+
+A missing skill *file* inside an otherwise-valid profile parks the individual
+skill step with a misconfiguration finding, matching built-in skill steps.
 
 ## Trust model
 
@@ -114,6 +132,10 @@ under `<NM_HOME>/profiles/`, a path no pushed commit can address. Its trust
 anchor is filesystem ownership on the daemon host — the same class as
 `~/.no-mistakes/config.yaml`, which already selects the agent binary that runs
 with the maintainer's credentials.
+
+`ignore_patterns` is read from the trusted default-branch config as well, so a
+pushed branch cannot hollow out the profile's review-type gates by ignoring
+every changed file (`ignore_patterns: ["*"]` on a pushed branch is ignored).
 
 ## Auditing which profile gated a run
 

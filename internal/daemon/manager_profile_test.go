@@ -67,6 +67,93 @@ func TestLoadProfile_UnsafeNameRejected(t *testing.T) {
 	}
 }
 
+// A profile.yaml that parses to zero steps — empty file, or a typo'd key like
+// `step:` — must fail loud: BuildPipeline treats an empty steps list as "run
+// the default pipeline", so accepting it would silently replace the team gate
+// with the default pipeline (the exact silent fallback the docs promise never
+// happens).
+func TestLoadProfile_EmptyStepsFailsLoud(t *testing.T) {
+	for name, yaml := range map[string]string{
+		"empty file":       "",
+		"version only":     "version: 1\n",
+		"empty steps list": "version: 1\nsteps: []\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			nmHome := t.TempDir()
+			writeProfile(t, nmHome, "team-ios", yaml, nil)
+			m := newProfileManager(nmHome)
+			_, _, err := m.loadProfile("team-ios")
+			if err == nil {
+				t.Fatal("expected an error for a profile with no steps (fail closed)")
+			}
+			if !strings.Contains(err.Error(), "defines no steps") {
+				t.Errorf("error = %v, want it to name the zero-steps problem", err)
+			}
+		})
+	}
+}
+
+// A typo'd key (e.g. `step:` for `steps:`) must fail parsing, not silently
+// yield zero steps: a profile is host-authored config with exactly two legal
+// keys, so strict parsing is cheap and matches the fail-loud contract.
+func TestLoadProfile_UnknownKeyFailsLoud(t *testing.T) {
+	nmHome := t.TempDir()
+	writeProfile(t, nmHome, "team-ios", "version: 1\nstep:\n  - review\n  - push\n", nil)
+	m := newProfileManager(nmHome)
+	if _, _, err := m.loadProfile("team-ios"); err == nil {
+		t.Fatal("expected an error for an unknown key in profile.yaml (typo must fail loud)")
+	}
+}
+
+// A shared profile must not carry `mode: revise` skill steps: one profile edit
+// would then mutate and auto-commit on every repo pointing at the profile, a
+// blast-radius posture that is deliberately deferred. Rejection happens at
+// profile load (fail the run at start) because after ComposeProfileSteps the
+// merged list no longer knows which steps came from the profile.
+func TestLoadProfile_RejectsReviseMode(t *testing.T) {
+	nmHome := t.TempDir()
+	writeProfile(t, nmHome, "team-ios",
+		"steps:\n  - rebase\n  - name: house-style\n    type: skill\n    skill: skills/revise.md\n    mode: revise\n  - push\n",
+		map[string]string{"skills/revise.md": "revise body"})
+	m := newProfileManager(nmHome)
+	_, _, err := m.loadProfile("team-ios")
+	if err == nil {
+		t.Fatal("expected an error for a revise-mode skill step in a shared profile")
+	}
+	if !strings.Contains(err.Error(), "mode: revise") || !strings.Contains(err.Error(), "house-style") {
+		t.Errorf("error = %v, want it to name the revise step", err)
+	}
+
+	// Review-mode skill steps stay allowed.
+	writeProfile(t, nmHome, "team-ok",
+		"steps:\n  - rebase\n  - name: ios-review\n    type: skill\n    skill: skills/review.md\n    mode: review\n  - push\n",
+		map[string]string{"skills/review.md": "review body"})
+	if _, _, err := m.loadProfile("team-ok"); err != nil {
+		t.Fatalf("review-mode profile should load: %v", err)
+	}
+}
+
+// A selected profile that cannot be verified against the trusted default
+// branch (fetch/resolve failure → empty trustedSHA) must stop the run, not
+// silently degrade to the default pipeline. When the trusted read succeeded,
+// the trusted copy is authoritative and the pushed value never matters.
+func TestUnverifiedProfileError(t *testing.T) {
+	if err := unverifiedProfileError("", &config.RepoConfig{Profile: "team-ios"}); err == nil {
+		t.Fatal("expected an error: profile selected but the default branch could not be fetched")
+	} else if !strings.Contains(err.Error(), "team-ios") {
+		t.Errorf("error = %v, want it to name the profile", err)
+	}
+	if err := unverifiedProfileError("", &config.RepoConfig{}); err != nil {
+		t.Errorf("no profile named: want nil, got %v", err)
+	}
+	if err := unverifiedProfileError("", nil); err != nil {
+		t.Errorf("nil pushed config: want nil, got %v", err)
+	}
+	if err := unverifiedProfileError("abc123", &config.RepoConfig{Profile: "team-ios"}); err != nil {
+		t.Errorf("trusted SHA resolved: want nil (trusted copy is authoritative), got %v", err)
+	}
+}
+
 func TestLoadProfile_ParsesSteps(t *testing.T) {
 	nmHome := t.TempDir()
 	writeProfile(t, nmHome, "team-ios", "version: 2\nsteps:\n  - rebase\n  - push\n", nil)

@@ -159,6 +159,102 @@ func TestSkillStep_WorktreeGuard_ResetsAndWarns(t *testing.T) {
 	}
 }
 
+// TestSkillStep_ReadOnlyGuard_AgentCommitBypass proves the read-only guard
+// catches an agent that edits files and then COMMITS them (agents habitually
+// run `git commit`): the tree is clean afterwards, so a porcelain-only check
+// would report nothing and the rogue commit would ship to the remote via the
+// push step with zero trace at the gate. The guard must compare HEAD too,
+// restore the snapshot commit, and gate the step.
+func TestSkillStep_ReadOnlyGuard_AgentCommitBypass(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The skill agent misbehaves: it edits a tracked file AND commits it,
+			// leaving a clean worktree with moved history.
+			if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("agent tampered\n"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "rogue agent commit")
+			j, _ := json.Marshal(Findings{Summary: "reviewed"})
+			return &agent.Result{Output: j}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &SkillStep{StepName: "security-review", SkillBody: testSkillBody, Mode: SkillModeReview}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// HEAD is restored to the pre-pass snapshot: the rogue commit is gone.
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("SECURITY: HEAD = %s, want the pre-pass snapshot %s (rogue commit must be discarded)", got, headSHA)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "feature.txt")); string(data) != "feature code\n" {
+		t.Fatalf("expected feature.txt reverted to committed content, got %q", data)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("expected clean worktree after guard reset, got %q", status)
+	}
+
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	found := false
+	for _, f := range findings.Items {
+		if strings.Contains(f.Description, "skill modified the worktree during a review-mode step") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning finding about the read-only violation, got %+v", findings.Items)
+	}
+	if !outcome.NeedsApproval {
+		t.Error("expected the read-only violation to gate the step")
+	}
+}
+
+// TestSkillStep_ReadOnlyGuard_AgentResetBack proves the guard also catches an
+// agent that truncates history with `git reset --hard <earlier>` — another
+// clean-tree attack, which would otherwise force-push truncated history under
+// a still-valid lease and drop contributor commits.
+func TestSkillStep_ReadOnlyGuard_AgentResetBack(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The skill agent truncates history back to the base commit.
+			gitCmd(t, dir, "reset", "--hard", baseSHA)
+			j, _ := json.Marshal(Findings{Summary: "reviewed"})
+			return &agent.Result{Output: j}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &SkillStep{StepName: "security-review", SkillBody: testSkillBody, Mode: SkillModeReview}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("SECURITY: HEAD = %s, want the pre-pass snapshot %s (truncated history must be restored)", got, headSHA)
+	}
+	if !outcome.NeedsApproval {
+		t.Error("expected the read-only violation to gate the step")
+	}
+}
+
 // TestSkillStep_CleanReviewNoApproval proves a clean skill review parks nothing
 // and leaves the worktree untouched.
 func TestSkillStep_CleanReviewNoApproval(t *testing.T) {
@@ -452,6 +548,81 @@ func TestSkillStep_Revise_RequireReviewParks(t *testing.T) {
 			if f.Action != types.ActionAskUser {
 				t.Errorf("require_review finding action = %q, want ask-user", f.Action)
 			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a require_review finding pointing at the committed diff, got %+v", findings.Items)
+	}
+}
+
+// TestSkillStep_Revise_AgentSelfCommit proves an agent that commits its own
+// revisions cannot evade the commit protocol or require_review: the step
+// rewinds the agent's commit and re-commits through commitAgentFixes, so
+// Run.HeadSHA advances, the DB and local branch ref stay in sync (what the
+// force-push lease depends on), and require_review still parks.
+func TestSkillStep_Revise_AgentSelfCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The revise skill edits AND commits on its own instead of leaving
+			// the commit to the pipeline.
+			if err := os.WriteFile(filepath.Join(dir, "revised.txt"), []byte("self committed\n"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "agent self commit")
+			j, _ := json.Marshal(Findings{Items: nil, Summary: "tighten error handling"})
+			return &agent.Result{Output: j}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &SkillStep{StepName: "house-style", SkillBody: testReviseBody, Mode: SkillModeRevise, RequireReview: true}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The mutation is bookkept through the real protocol: HeadSHA advanced...
+	if sctx.Run.HeadSHA == headSHA {
+		t.Fatal("expected HeadSHA to advance after a self-committed revision")
+	}
+	// ...matches the actual worktree HEAD (no stale bookkeeping)...
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sctx.Run.HeadSHA {
+		t.Fatalf("worktree HEAD = %s, want Run.HeadSHA %s", got, sctx.Run.HeadSHA)
+	}
+	// ...was persisted to the DB...
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if dbRun.HeadSHA != sctx.Run.HeadSHA {
+		t.Fatalf("DB head = %s, want %s", dbRun.HeadSHA, sctx.Run.HeadSHA)
+	}
+	// ...and fast-forwarded the local branch ref the push step publishes.
+	if ref := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); ref != sctx.Run.HeadSHA {
+		t.Fatalf("branch ref = %s, want %s", ref, sctx.Run.HeadSHA)
+	}
+	// The commit went through the pipeline protocol, not the agent's own commit.
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(house-style): tighten error handling" {
+		t.Fatalf("last commit message = %q (agent's own commit must be rewound and re-committed)", got)
+	}
+	// require_review must park: the self-commit cannot make mutated read false.
+	if !outcome.NeedsApproval {
+		t.Fatal("SECURITY: require_review must park after a self-committed mutation")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	found := false
+	for _, f := range findings.Items {
+		if strings.Contains(f.Description, "review the diff before continuing") {
+			found = true
 		}
 	}
 	if !found {
