@@ -12,8 +12,8 @@ import (
 )
 
 // SkillModeReview is a read-only findings pass. The step enforces the read-only
-// contract by resetting the worktree if the skill agent dirties it (see the
-// worktree guard in Execute).
+// contract by resetting the worktree if the skill agent dirties it or moves
+// HEAD — e.g. by committing its edits (see the worktree guard in Execute).
 const SkillModeReview = "review"
 
 // SkillModeRevise lets the skill mutate the worktree: it applies safe revisions
@@ -123,9 +123,13 @@ func (s *SkillStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, 
 
 	prompt := s.reviewPrompt(sctx, branch, baseSHA, reviewScope, ignorePatterns)
 
-	// Snapshot the worktree so the read-only guard can tell whether the skill
-	// agent dirtied it during this non-fixing pass.
+	// Snapshot the worktree AND its HEAD so the read-only guard can tell
+	// whether the skill agent dirtied the tree or moved history during this
+	// pass. The head snapshot is what catches an agent that edits and then
+	// commits (clean tree, moved HEAD) or resets history back — either would
+	// otherwise ship to the remote with zero trace at the gate.
 	statusBefore, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	headBefore, _ := git.HeadSHA(ctx, sctx.WorkDir)
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
@@ -146,9 +150,10 @@ func (s *SkillStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, 
 	}
 
 	// Read-only guard (enforced, not hoped): mode: review must not mutate the
-	// worktree. If the skill agent left changes, discard them and record a
-	// warning finding so the contract is visible rather than silent.
-	if s.enforceReadOnly(sctx, statusBefore) {
+	// worktree or its history. If the skill agent left changes or moved HEAD,
+	// discard them and record a warning finding so the contract is visible
+	// rather than silent.
+	if s.enforceReadOnly(sctx, statusBefore, headBefore) {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
 			Description: "skill modified the worktree during a review-mode step; changes were discarded",
@@ -199,25 +204,43 @@ func (s *SkillStep) hasReviewableChanges(sctx *pipeline.StepContext, baseSHA str
 	return false, nil
 }
 
-// enforceReadOnly discards any worktree changes the skill agent introduced
-// during a review pass and reports whether it had to. A reset to HEAD plus a
-// clean of untracked files fully reverts staged, unstaged, and new files, so
-// the read-only contract holds even if the agent staged its edits. statusBefore
-// is the porcelain status captured before the agent ran: the worktree is
-// expected clean there, so anything new is the agent's doing.
-func (s *SkillStep) enforceReadOnly(sctx *pipeline.StepContext, statusBefore string) bool {
+// enforceReadOnly discards any worktree or history changes the skill agent
+// introduced during a review pass and reports whether it had to. A reset to
+// the pre-pass HEAD plus a clean of untracked files fully reverts staged,
+// unstaged, new, and committed changes, so the read-only contract holds even
+// if the agent staged — or committed — its edits, or reset history backwards.
+// statusBefore is the porcelain status captured before the agent ran (the
+// worktree is expected clean there, so anything new is the agent's doing);
+// headBefore is the HEAD SHA captured at the same moment. Comparing HEAD is
+// essential: an agent that runs `git add -A && git commit` leaves a clean
+// tree, so a porcelain-only check would let the rogue commit ship to the
+// remote via the push step with zero trace at the gate.
+func (s *SkillStep) enforceReadOnly(sctx *pipeline.StepContext, statusBefore, headBefore string) bool {
 	ctx := sctx.Ctx
-	statusAfter, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
-	if err != nil {
-		return false
+	violated := false
+	// Reset target: the snapshot HEAD when we have one (covers commit, amend,
+	// and reset-back attacks), else the current HEAD (dirty-tree-only case).
+	resetTarget := "HEAD"
+	if headBefore != "" {
+		if headAfter, err := git.HeadSHA(ctx, sctx.WorkDir); err == nil && headAfter != headBefore {
+			sctx.Log(fmt.Sprintf("%s: skill moved HEAD during a review-mode step (%s -> %s); restoring", s.StepName, shortSHA(headBefore), shortSHA(headAfter)))
+			violated = true
+			resetTarget = headBefore
+		}
 	}
-	if strings.TrimSpace(statusAfter) == "" || statusAfter == statusBefore {
+	if statusAfter, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain"); err == nil {
+		if strings.TrimSpace(statusAfter) != "" && statusAfter != statusBefore {
+			violated = true
+		}
+	}
+	if !violated {
 		return false
 	}
 	sctx.Log(fmt.Sprintf("%s: skill modified the worktree during a review-mode step; discarding changes", s.StepName))
-	// reset --hard reverts tracked files (staged or not) to HEAD; clean -fd
-	// removes untracked files and directories.
-	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--hard"); err != nil {
+	// reset --hard reverts tracked files (staged or not) — and, when the agent
+	// moved HEAD, restores the snapshot commit; clean -fd removes untracked
+	// files and directories.
+	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--hard", resetTarget); err != nil {
 		sctx.Log(fmt.Sprintf("%s: failed to reset worktree after read-only violation: %v", s.StepName, err))
 	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "clean", "-fd"); err != nil {
@@ -281,6 +304,13 @@ func (s *SkillStep) runRevise(sctx *pipeline.StepContext, branch, baseSHA, revie
 
 	prompt := s.revisePrompt(sctx, branch, baseSHA, reviewScope, ignorePatterns)
 	headBefore := sctx.Run.HeadSHA
+	// Snapshot the worktree HEAD so an agent that commits on its own is
+	// detected. Self-committed history would leave the tree clean, making
+	// commitAgentFixes a no-op: mutated would read false (defeating
+	// require_review), the local branch ref would not advance, and
+	// sctx.Run.HeadSHA would go stale — yet the mutation would still reach the
+	// remote at push.
+	worktreeHeadBefore, _ := git.HeadSHA(ctx, sctx.WorkDir)
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
@@ -297,6 +327,19 @@ func (s *SkillStep) runRevise(sctx *pipeline.StepContext, branch, baseSHA, revie
 		if err := json.Unmarshal(result.Output, &findings); err != nil {
 			sctx.Log("could not parse structured output, using text response")
 			findings = Findings{Summary: result.Text}
+		}
+	}
+
+	// If the agent moved HEAD itself (agents habitually run `git commit`),
+	// rewind softly to the snapshot so its changes land back in the worktree
+	// and get committed below through the one real protocol. Failing to rewind
+	// must fail the step: proceeding would push unbookkept history.
+	if worktreeHeadBefore != "" {
+		if headAfter, err := git.HeadSHA(ctx, sctx.WorkDir); err == nil && headAfter != worktreeHeadBefore {
+			sctx.Log(fmt.Sprintf("%s: skill committed on its own (%s -> %s); rewinding to commit through the pipeline protocol", s.StepName, shortSHA(worktreeHeadBefore), shortSHA(headAfter)))
+			if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--soft", worktreeHeadBefore); err != nil {
+				return nil, fmt.Errorf("rewind agent-authored commit in %s revise step: %w", s.StepName, err)
+			}
 		}
 	}
 
@@ -353,6 +396,7 @@ Read the relevant history and diff yourself, then follow the repository skill gu
 
 Output contract:
 - Apply the safe revisions the skill guidance calls for directly to the files. Keep edits minimal and root-cause; do not do unrelated refactoring.
+- Do NOT run git commit or any other history-modifying git command; the pipeline commits your revisions for you. Any commit you create yourself will be undone and re-committed by the pipeline.
 - After revising, re-review your own result and report ONLY the findings you did NOT resolve (issues that need human judgment or that you could not safely fix). Do not report anything you already fixed.
 - Anchor every finding to a specific file and one-indexed line number when possible.
 - Use severity "error" for problems that should absolutely not get merged, "warning" for things worth addressing but that can follow up, and "info" for nice-to-haves.
@@ -400,6 +444,7 @@ Use the repository skill guidance below to understand what this check cares abou
 Rules:
 - Always start with double checking whether the findings are legitimate.
 - Make the smallest correct root-cause fix within the changed area; avoid unrelated refactoring.
+- Do NOT run git commit or any other history-modifying git command; the pipeline commits your fixes for you.
 - Avoid resolving a finding by removing or reverting the author's intentional code. Fix forward rather than deleting deliberate changes unless the finding is a legitimate correctness, reliability, or security issue.
 - Do not add code comments explaining your fixes.
 - Verify that the issues are resolved before finishing.

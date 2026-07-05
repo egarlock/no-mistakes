@@ -8,13 +8,14 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials, and `steps` selects which validation steps run at all.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands`, `agent`, and `steps` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
+The daemon also reads `document.instructions`, `disable_project_settings`, and `profile` only from that trusted copy.
+`ignore_patterns` is not code-executing but selects whether validation executes at all (a pushed `ignore_patterns: ["*"]` would turn every review-type gate into a no-op), so it rides the same trusted channel.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
+Non-executing fields (`auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
 
-If you genuinely want per-branch `commands`, `agent`, and `steps` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
+If you genuinely want per-branch `commands`, `agent`, `steps`, and `ignore_patterns` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
 
 ```yaml
@@ -205,6 +206,8 @@ Paths to exclude from review and documentation checks.
 | Type | `string[]` |
 | Default | Empty (no ignores) |
 
+Because ignore patterns decide whether review-type gates run at all, they are read from the trusted default-branch copy of `.no-mistakes.yaml` — never the pushed branch — unless [`allow_repo_commands`](#allow_repo_commands) is enabled. A pushed branch cannot widen the ignore list to skip its own review.
+
 Pattern matching rules:
 
 | Pattern | Rule |
@@ -228,7 +231,7 @@ profile: team-ios
 
 With no repo `steps:`, the profile's step list is the pipeline. To keep repo-local steps too, add a `- use: profile` splice sentinel to `steps:` (see [Shared Gate Profiles](/no-mistakes/guides/shared-profiles/#composing-profile--repo-steps)).
 
-`profile` is a **trusted-only** selection: it is read only from the trusted default-branch copy of `.no-mistakes.yaml`, so a pushed branch can never set, switch, or drop a profile. Unlike `commands`/`agent`/`steps`, it stays trusted-only **even when** [`allow_repo_commands`](#allow_repo_commands) is enabled. A `profile:` naming a directory the daemon host has not provisioned (missing or unparsable `profile.yaml`) fails the run at start — there is no silent fallback to the default pipeline.
+`profile` is a **trusted-only** selection: it is read only from the trusted default-branch copy of `.no-mistakes.yaml`, so a pushed branch can never set, switch, or drop a profile. Unlike `commands`/`agent`/`steps`, it stays trusted-only **even when** [`allow_repo_commands`](#allow_repo_commands) is enabled. A `profile:` naming a directory the daemon host has not provisioned (missing, unparsable, carrying unknown keys, or defining no steps) fails the run at start — there is no silent fallback to the default pipeline. The same applies when the default branch cannot be fetched to verify the selection: a repo that names a profile refuses to run rather than run ungated.
 
 ### steps
 
@@ -299,7 +302,7 @@ steps:
   - name: security-review
     type: skill
     skill: .no-mistakes/skills/review.md
-    mode: review          # read-only findings pass (the only mode today)
+    mode: review          # read-only findings pass (see mode: revise below)
     auto_fix: false        # optional; default false (findings park, like built-in review)
   - test
   - lint
