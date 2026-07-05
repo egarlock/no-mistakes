@@ -10,7 +10,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/update"
@@ -141,20 +140,7 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		return fmt.Errorf("--skip only applies when starting a new pipeline run")
 	}
 
-	telemetry.Pageview("/tui", telemetry.Fields{
-		"entrypoint":      attachEntrypoint(rootDefault, runID),
-		"run_status":      run.Status,
-		"explicit_run_id": runID != "",
-	})
-
 	return runTUI(p.Socket(), client, run, update.CachedLatestVersion())
-}
-
-func attachEntrypoint(rootDefault bool, runID string) string {
-	if rootDefault && runID == "" {
-		return "root"
-	}
-	return "attach"
 }
 
 func activeRunBranch(state *repoState, rootDefault bool) string {
@@ -245,9 +231,7 @@ func newAttachCmd() *cobra.Command {
 If no run ID is specified, attaches to the active run for the current repo.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("attach", func() error {
-				return attachRun(cmd.Context(), cmd.OutOrStdout(), runID, false, false, nil)
-			})
+			return attachRun(cmd.Context(), cmd.OutOrStdout(), runID, false, false, nil)
 		},
 	}
 

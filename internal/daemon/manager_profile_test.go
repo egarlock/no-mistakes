@@ -137,20 +137,147 @@ func TestLoadProfile_RejectsReviseMode(t *testing.T) {
 // branch (fetch/resolve failure → empty trustedSHA) must stop the run, not
 // silently degrade to the default pipeline. When the trusted read succeeded,
 // the trusted copy is authoritative and the pushed value never matters.
+// A host-local binding needs no trusted SHA at all: nothing about it comes
+// from the repo, so the check applies only to the repo-config path.
 func TestUnverifiedProfileError(t *testing.T) {
-	if err := unverifiedProfileError("", &config.RepoConfig{Profile: "team-ios"}); err == nil {
+	if err := unverifiedProfileError("", "", &config.RepoConfig{Profile: "team-ios"}); err == nil {
 		t.Fatal("expected an error: profile selected but the default branch could not be fetched")
 	} else if !strings.Contains(err.Error(), "team-ios") {
 		t.Errorf("error = %v, want it to name the profile", err)
 	}
-	if err := unverifiedProfileError("", &config.RepoConfig{}); err != nil {
+	if err := unverifiedProfileError("", "", &config.RepoConfig{}); err != nil {
 		t.Errorf("no profile named: want nil, got %v", err)
 	}
-	if err := unverifiedProfileError("", nil); err != nil {
+	if err := unverifiedProfileError("", "", nil); err != nil {
 		t.Errorf("nil pushed config: want nil, got %v", err)
 	}
-	if err := unverifiedProfileError("abc123", &config.RepoConfig{Profile: "team-ios"}); err != nil {
+	if err := unverifiedProfileError("", "abc123", &config.RepoConfig{Profile: "team-ios"}); err != nil {
 		t.Errorf("trusted SHA resolved: want nil (trusted copy is authoritative), got %v", err)
+	}
+	// Host-local binding: machine-owner-authored, does not need the default
+	// branch to resolve — even when the pushed config also names a profile.
+	if err := unverifiedProfileError("team-local", "", &config.RepoConfig{Profile: "team-ios"}); err != nil {
+		t.Errorf("local binding with empty trusted SHA: want nil, got %v", err)
+	}
+	if err := unverifiedProfileError("team-local", "", nil); err != nil {
+		t.Errorf("local binding with nil pushed config: want nil, got %v", err)
+	}
+}
+
+// A host-local repo→profile binding (`no-mistakes profile use`) wins over the
+// repo config's trusted `profile:` field: it is authored by the machine owner,
+// so it carries the same trust level as the global config.
+func TestResolveProfilePipeline_LocalBindingWinsOverRepoConfig(t *testing.T) {
+	nmHome := t.TempDir()
+	writeProfile(t, nmHome, "team-local", "steps:\n  - rebase\n  - push\n", nil)
+	writeProfile(t, nmHome, "team-repo", "steps:\n  - review\n  - push\n", nil)
+	m := newProfileManager(nmHome)
+
+	got, err := m.resolveProfilePipeline(t.Context(), "test-run", "test-branch", "team-local", "team-repo", nil, "")
+	if err != nil {
+		t.Fatalf("resolveProfilePipeline: %v", err)
+	}
+	if len(got.steps) != 2 || got.steps[0].Name != "rebase" {
+		t.Fatalf("steps = %+v, want the LOCAL binding's steps (rebase, push)", got.steps)
+	}
+	if !strings.HasPrefix(got.stamp, "team-local@") {
+		t.Errorf("stamp = %q, want it to record the locally-bound profile", got.stamp)
+	}
+}
+
+// With no repo-config profile at all (the work-repo case: no .no-mistakes.yaml
+// committed), the local binding alone selects the profile and its steps become
+// the whole pipeline.
+func TestResolveProfilePipeline_LocalBindingOnly(t *testing.T) {
+	nmHome := t.TempDir()
+	writeProfile(t, nmHome, "team-local", "steps:\n  - rebase\n  - review\n  - push\n", nil)
+	m := newProfileManager(nmHome)
+
+	got, err := m.resolveProfilePipeline(t.Context(), "test-run", "test-branch", "team-local", "", nil, "")
+	if err != nil {
+		t.Fatalf("resolveProfilePipeline: %v", err)
+	}
+	if len(got.steps) != 3 {
+		t.Fatalf("steps = %+v, want the profile's 3 steps as the whole pipeline", got.steps)
+	}
+	if !strings.HasPrefix(got.stamp, "team-local@") {
+		t.Errorf("stamp = %q, want a team-local stamp", got.stamp)
+	}
+}
+
+// A local binding to a missing/broken profile fails the run at start — it must
+// never fall back to the repo-config profile or the default pipeline.
+func TestResolveProfilePipeline_LocalBindingMissingProfileFails(t *testing.T) {
+	nmHome := t.TempDir()
+	writeProfile(t, nmHome, "team-repo", "steps:\n  - review\n  - push\n", nil)
+	m := newProfileManager(nmHome)
+
+	_, err := m.resolveProfilePipeline(t.Context(), "test-run", "test-branch", "team-absent", "team-repo", nil, "")
+	if err == nil {
+		t.Fatal("expected an error for a local binding to a missing profile (fail closed, no fallback)")
+	}
+	if !strings.Contains(err.Error(), "team-absent") {
+		t.Errorf("error = %v, want it to name the locally-bound profile", err)
+	}
+}
+
+// Repo `steps:` with a `- use: profile` splice sentinel compose with a
+// locally-bound profile exactly like the repo-config path.
+func TestResolveProfilePipeline_SpliceCompositionWithLocalBinding(t *testing.T) {
+	nmHome := t.TempDir()
+	writeProfile(t, nmHome, "team-local", "steps:\n  - review\n  - lint\n", nil)
+	m := newProfileManager(nmHome)
+
+	repoSteps := []config.StepSpec{
+		{Name: "rebase"},
+		{Use: config.ProfileSpliceSentinel},
+		{Name: "push"},
+	}
+	got, err := m.resolveProfilePipeline(t.Context(), "test-run", "test-branch", "team-local", "", repoSteps, "repo instructions")
+	if err != nil {
+		t.Fatalf("resolveProfilePipeline: %v", err)
+	}
+	want := []string{"rebase", "review", "lint", "push"}
+	if len(got.steps) != len(want) {
+		t.Fatalf("steps = %+v, want %v", got.steps, want)
+	}
+	for i, name := range want {
+		if got.steps[i].Name != name {
+			t.Errorf("steps[%d] = %q, want %q", i, got.steps[i].Name, name)
+		}
+	}
+	if !strings.Contains(got.instructions, "repo instructions") {
+		t.Errorf("instructions = %q, want the repo instructions preserved", got.instructions)
+	}
+}
+
+// No profile selected anywhere: repo steps and instructions pass through
+// untouched and no stamp is produced.
+func TestResolveProfilePipeline_NoProfilePassthrough(t *testing.T) {
+	m := newProfileManager(t.TempDir())
+	repoSteps := []config.StepSpec{{Name: "rebase"}, {Name: "push"}}
+	got, err := m.resolveProfilePipeline(t.Context(), "test-run", "test-branch", "", "", repoSteps, "repo instructions")
+	if err != nil {
+		t.Fatalf("resolveProfilePipeline: %v", err)
+	}
+	if len(got.steps) != 2 || got.steps[0].Name != "rebase" {
+		t.Fatalf("steps = %+v, want the repo steps unchanged", got.steps)
+	}
+	if got.instructions != "repo instructions" {
+		t.Errorf("instructions = %q, want passthrough", got.instructions)
+	}
+	if got.stamp != "" {
+		t.Errorf("stamp = %q, want empty when no profile gates the run", got.stamp)
+	}
+}
+
+// A stray `- use: profile` sentinel with no profile selected (neither local
+// binding nor repo config) still fails loud.
+func TestResolveProfilePipeline_StraySpliceFails(t *testing.T) {
+	m := newProfileManager(t.TempDir())
+	repoSteps := []config.StepSpec{{Use: config.ProfileSpliceSentinel}}
+	if _, err := m.resolveProfilePipeline(t.Context(), "test-run", "test-branch", "", "", repoSteps, ""); err == nil {
+		t.Fatal("expected an error for a splice sentinel with no profile selected")
 	}
 }
 
@@ -266,8 +393,8 @@ func TestProfilePathWithinDir(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		if _, ok := profilePathWithinDir(dir, c.rel); ok != c.want {
-			t.Errorf("profilePathWithinDir(%q) safe=%v, want %v", c.rel, ok, c.want)
+		if _, ok := ProfilePathWithinDir(dir, c.rel); ok != c.want {
+			t.Errorf("ProfilePathWithinDir(%q) safe=%v, want %v", c.rel, ok, c.want)
 		}
 	}
 }

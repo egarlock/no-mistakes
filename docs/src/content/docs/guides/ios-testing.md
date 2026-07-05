@@ -107,6 +107,69 @@ By default `auto_fix` is `false` on a custom command step, so `ios-test` finding
 for a decision. Add `auto_fix: true` to the step if you want the fix loop to drive your
 agent at objective failures the same way the built-in test step does.
 
+## Running a subset of tests
+
+`xcodebuild`'s `-only-testing:` flag scopes a run to a target, class, or single test,
+and it composes with everything above. A common shape is a fast smoke step that runs
+the tests you actually touch plus a full-suite step:
+
+```yaml
+steps:
+  - rebase
+  - review
+  - test
+  - name: ios-test-smoke
+    command: >-
+      xcodebuild test
+      -project App.xcodeproj
+      -scheme App
+      -destination 'platform=iOS Simulator,name=iPhone 16'
+      -only-testing:AppTests/CheckoutFlowTests
+      -only-testing:AppUITests/LoginUITests/testHappyPath
+      -quiet
+    timeout: 20m
+  - name: ios-test-full
+    command: >-
+      xcodebuild test
+      -project App.xcodeproj
+      -scheme App
+      -destination 'platform=iOS Simulator,name=iPhone 16'
+      -quiet
+    timeout: 45m
+  - push
+  - pr
+  - ci
+```
+
+Two current limitations to know about:
+
+- **Per-push selection only covers built-in steps.** `git push no-mistakes -o
+  no-mistakes.skip=<steps>` accepts built-in step names only, so you cannot skip
+  `ios-test-full` on one push and run it on the next. The step list is fixed by the
+  trusted config; vary *what a step does* with a repo script (below) if you need
+  dynamism.
+- **A repo script's body runs from the pushed worktree.** A step like
+  `command: ./scripts/run-selected-tests.sh` (e.g. mapping `git diff --name-only`
+  output to `-only-testing:` flags) works, but while the command *string* is read from
+  the trusted default branch, the script *contents* execute from the pushed branch. On
+  a single-developer repo that is fine; on a multi-contributor repo, prefer inline
+  commands or treat such scripts as part of your review surface.
+
+## Validating without publishing
+
+The push chain is optional. To use the gate purely as a local validator — for example
+on a machine where you never want the branch forwarded or a PR opened — either skip
+the publish steps per push:
+
+```sh
+git push no-mistakes my-branch -o no-mistakes.skip=push,pr,ci
+```
+
+or omit `push`/`pr`/`ci` from the repo's `steps:` list entirely. The chain rules only
+require `push` before `pr`, and `pr` before `ci`, *when those steps are present*.
+Pipeline fixes still land in the gate's copy of your branch, so pull them back into
+your working repo with `git fetch no-mistakes <branch>` followed by a merge or reset.
+
 ## Preconditions: a doctor-style checklist
 
 The engine runs whatever you configure; it cannot conjure a working Xcode toolchain.

@@ -9,8 +9,8 @@ import (
 )
 
 // Result is what Extract returns when it successfully attaches an intent
-// to a run. AgentName/SessionID/Score are surfaced for telemetry and DB
-// persistence; callers store the Summary onto db.Run.Intent.
+// to a run. AgentName/SessionID/Score are surfaced for DB persistence;
+// callers store the Summary onto db.Run.Intent.
 type Result struct {
 	Summary   string
 	AgentName string

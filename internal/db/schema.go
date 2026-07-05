@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS repos (
     upstream_url   TEXT NOT NULL,
     fork_url       TEXT,
     default_branch TEXT NOT NULL DEFAULT 'main',
+    local_profile  TEXT,
     created_at     INTEGER NOT NULL
 );
 
@@ -190,4 +191,5 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
 	`ALTER TABLE runs ADD COLUMN profile TEXT`,
+	`ALTER TABLE repos ADD COLUMN local_profile TEXT`,
 }

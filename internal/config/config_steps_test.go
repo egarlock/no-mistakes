@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -252,5 +253,50 @@ func TestMerge_StepsFromRepoOnly(t *testing.T) {
 	empty := Merge(&GlobalConfig{}, &RepoConfig{})
 	if empty.Steps != nil {
 		t.Errorf("steps = %v, want nil when repo config has none", stepNames(empty.Steps))
+	}
+}
+
+// A typo'd key in a steps mapping must fail loudly. A silently dropped
+// findings_json or timeout weakens the gate without any signal to the author.
+func TestLoadRepoFromBytes_StepsUnknownKeyFails(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "misspelled timeout",
+			data: "steps:\n  - name: ios-test\n    command: xcodebuild test\n    timout: 45m\n",
+			want: "timout",
+		},
+		{
+			name: "hyphenated findings_json",
+			data: "steps:\n  - name: ios-test\n    command: xcodebuild test\n    findings-json: out.json\n",
+			want: "findings-json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadRepoFromBytes([]byte(tt.data))
+			if err == nil {
+				t.Fatalf("expected error for unknown step key %q", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q does not name the unknown key %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// The same steps schema is used by profile.yaml, so a step-mapping typo in a
+// profile must fail loudly too.
+func TestLoadProfileFromBytes_StepsUnknownKeyFails(t *testing.T) {
+	data := []byte("version: 1\nsteps:\n  - name: team-review\n    skil: skills/review.md\n")
+	_, err := LoadProfileFromBytes(data)
+	if err == nil {
+		t.Fatal("expected error for unknown step key \"skil\"")
+	}
+	if !strings.Contains(err.Error(), "skil") {
+		t.Errorf("error %q does not name the unknown key", err)
 	}
 }

@@ -233,6 +233,8 @@ With no repo `steps:`, the profile's step list is the pipeline. To keep repo-loc
 
 `profile` is a **trusted-only** selection: it is read only from the trusted default-branch copy of `.no-mistakes.yaml`, so a pushed branch can never set, switch, or drop a profile. Unlike `commands`/`agent`/`steps`, it stays trusted-only **even when** [`allow_repo_commands`](#allow_repo_commands) is enabled. A `profile:` naming a directory the daemon host has not provisioned (missing, unparsable, carrying unknown keys, or defining no steps) fails the run at start — there is no silent fallback to the default pipeline. The same applies when the default branch cannot be fetched to verify the selection: a repo that names a profile refuses to run rather than run ungated.
 
+A **host-local binding** set with [`no-mistakes profile use <name>`](/no-mistakes/reference/cli/#no-mistakes-profile-use) **takes precedence over this field**. The binding is authored by the machine owner (same trust level as the global config), lives in the local database rather than the repo, and works with no `.no-mistakes.yaml` committed at all — see [Bind a repo locally](/no-mistakes/guides/shared-profiles/#bind-a-repo-locally-nothing-committed-to-the-repo). When both are set and differ, the daemon logs the override and the locally bound profile gates the run.
+
 ### steps
 
 Enable, disable, or reorder the built-in pipeline steps for this repo. Each entry is a step name; the pipeline runs exactly the listed steps, in list order.

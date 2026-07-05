@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"strings"
-	"time"
 
 	toON "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -102,15 +100,6 @@ func openSyncService() (*branchsync.Service, func(), error) {
 }
 
 func runHumanSync(cmd *cobra.Command, check, yes bool) error {
-	started := time.Now()
-	mode := "apply"
-	if check {
-		mode = "check"
-	}
-	var observed branchsync.State
-	result := "error"
-	defer func() { trackSyncAttempt("sync", "human_cli", mode, observed, result, started) }()
-
 	service, closeFn, err := openSyncService()
 	if err != nil {
 		return err
@@ -118,28 +107,22 @@ func runHumanSync(cmd *cobra.Command, check, yes bool) error {
 	defer closeFn()
 
 	state := service.Refresh(cmd.Context())
-	observed = state
 	printHumanSyncState(cmd, state)
 	if check {
 		if syncStateSuccessful(state, true) {
-			result = "noop"
 			return nil
 		}
-		result = "refused"
 		return &exitError{code: 1}
 	}
 	if state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved {
-		result = "noop"
 		return nil
 	}
 	if !branchsync.CanApply(state) {
-		result = "refused"
 		return &exitError{code: 1}
 	}
 	if !yes {
 		if !syncInteractive() {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Non-interactive input cannot confirm this plan. Re-run with `no-mistakes sync --yes`.")
-			result = "refused"
 			return &exitError{code: 1}
 		}
 		if state.Safety == branchsync.SafetySafeEquivalentAdvance {
@@ -154,36 +137,19 @@ func runHumanSync(cmd *cobra.Command, check, yes bool) error {
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer != "y" && answer != "yes" {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Cancelled; no files or refs were changed.")
-			result = "cancelled"
 			return nil
 		}
 	}
 
 	applyResult := service.Apply(cmd.Context())
-	observed = applyResult
 	printHumanSyncState(cmd, applyResult)
 	if syncStateSuccessful(applyResult, false) {
-		if applyResult.Changed {
-			result = "applied"
-		} else {
-			result = "noop"
-		}
 		return nil
 	}
-	result = "refused"
 	return &exitError{code: 1}
 }
 
 func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
-	started := time.Now()
-	mode := "recover"
-	if keepLocal {
-		mode = "recover_keep_local"
-	}
-	var observed branchsync.State
-	result := "error"
-	defer func() { trackSyncAttempt("sync", "human_cli", mode, observed, result, started) }()
-
 	service, closeFn, err := openSyncService()
 	if err != nil {
 		return err
@@ -191,12 +157,10 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	defer closeFn()
 
 	state := service.InspectCached(cmd.Context())
-	observed = state
 	if !yes {
 		printHumanSyncState(cmd, state)
 		if !syncInteractive() {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Non-interactive input cannot confirm this recovery. Re-run with `no-mistakes sync --recover --yes`.")
-			result = "refused"
 			return &exitError{code: 1}
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
@@ -215,24 +179,16 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer != "y" && answer != "yes" {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Cancelled; no files or refs were changed.")
-			result = "cancelled"
 			return nil
 		}
 	}
 
 	recovered := service.Recover(cmd.Context(), keepLocal)
-	observed = recovered
 	printHumanSyncState(cmd, recovered)
 	if recovered.Recovered {
 		fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; start a fresh run when ready.")
-		if recovered.Changed {
-			result = "applied"
-		} else {
-			result = "noop"
-		}
 		return nil
 	}
-	result = "refused"
 	return &exitError{code: 1}
 }
 
@@ -293,19 +249,7 @@ func humanSyncSummary(state branchsync.State) string {
 }
 
 func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
-	started := time.Now()
-	mode := "apply"
-	switch {
-	case check:
-		mode = "check"
-	case recover && keepLocal:
-		mode = "recover_keep_local"
-	case recover:
-		mode = "recover"
-	}
 	var state branchsync.State
-	result := "error"
-	defer func() { trackSyncAttempt("axi-sync", "axi", mode, state, result, started) }()
 
 	service, closeFn, err := openSyncService()
 	if err != nil {
@@ -341,48 +285,9 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		successful = state.Recovered
 	}
 	if successful {
-		if state.Changed {
-			result = "applied"
-		} else {
-			result = "noop"
-		}
 		return nil
 	}
-	result = "refused"
 	return &exitError{code: 1}
-}
-
-func trackSyncAttempt(command, surface, mode string, state branchsync.State, result string, started time.Time) {
-	telemetry.Track("command", telemetry.Fields{
-		"command":      command,
-		"surface":      surface,
-		"mode":         mode,
-		"status":       result,
-		"result":       result,
-		"state_before": boundedSyncValue(state.State),
-		"relation":     boundedSyncValue(state.Relation),
-		"target_kind":  boundedSyncValue(state.Target.Kind),
-		"run_phase":    boundedSyncValue(state.Pipeline.Phase),
-		"pr_state":     boundedSyncValue(state.PRState),
-		"reason":       boundedSyncValue(state.Safety),
-		"dirty":        !state.Local.Clean && state.Local.Head != "",
-		"duration_ms":  time.Since(started).Milliseconds(),
-	})
-}
-
-func boundedSyncValue(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "unknown"
-	}
-	if len(value) > 64 {
-		return "unknown"
-	}
-	for _, r := range value {
-		if (r < 'a' || r > 'z') && r != '_' {
-			return "unknown"
-		}
-	}
-	return value
 }
 
 func syncStateSuccessful(state branchsync.State, check bool) bool {

@@ -26,134 +26,132 @@ func newDoctorCmd() *cobra.Command {
 		Short: "Check system health and dependencies",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommandStatus("doctor", func() (string, error) {
-				w := cmd.OutOrStdout()
-				allOK := true
+			w := cmd.OutOrStdout()
+			allOK := true
 
-				ok := func(label, detail string) {
-					fmt.Fprintf(w, "  %s %s  %s\n", sGreen.Render("✓"), sDim.Render(label), detail)
-				}
-				warn := func(label, detail string) {
-					fmt.Fprintf(w, "  %s %s  %s\n", sYellow.Render("–"), sDim.Render(label), detail)
-				}
-				fail := func(label, detail string) {
-					fmt.Fprintf(w, "  %s %s  %s\n", sRed.Render("✗"), sDim.Render(label), detail)
-				}
+			ok := func(label, detail string) {
+				fmt.Fprintf(w, "  %s %s  %s\n", sGreen.Render("✓"), sDim.Render(label), detail)
+			}
+			warn := func(label, detail string) {
+				fmt.Fprintf(w, "  %s %s  %s\n", sYellow.Render("–"), sDim.Render(label), detail)
+			}
+			fail := func(label, detail string) {
+				fmt.Fprintf(w, "  %s %s  %s\n", sRed.Render("✗"), sDim.Render(label), detail)
+			}
 
-				fmt.Fprintf(w, "  %s\n", sCyan.Render("System"))
+			fmt.Fprintf(w, "  %s\n", sCyan.Render("System"))
 
-				if _, err := exec.LookPath("git"); err != nil {
-					fail("git           ", "not found")
-					allOK = false
-				} else {
-					gitCmd := exec.Command("git", "--version")
-					winproc.Harden(gitCmd)
-					out, err := gitCmd.Output()
-					if err != nil {
-						fail("git           ", fmt.Sprintf("error (%v)", err))
-						allOK = false
-					} else {
-						ok("git           ", strings.TrimSpace(string(out)))
-					}
-				}
-
-				if _, err := exec.LookPath("gh"); err != nil {
-					warn("gh            ", "not found "+sDim.Render("(optional, needed for PR/CI)"))
-				} else {
-					ok("gh            ", "ok")
-				}
-
-				if _, err := exec.LookPath("az"); err != nil {
-					warn("az            ", "not found "+sDim.Render("(optional, needed for Azure DevOps PR/CI)"))
-				} else {
-					ok("az            ", "ok")
-				}
-
-				p, err := paths.New()
+			if _, err := exec.LookPath("git"); err != nil {
+				fail("git           ", "not found")
+				allOK = false
+			} else {
+				gitCmd := exec.Command("git", "--version")
+				winproc.Harden(gitCmd)
+				out, err := gitCmd.Output()
 				if err != nil {
-					fail("data directory", fmt.Sprintf("error resolving paths (%v)", err))
-					allOK = false
-				} else if _, err := os.Stat(p.Root()); os.IsNotExist(err) {
-					fail("data directory", fmt.Sprintf("not found (%s)", p.Root()))
+					fail("git           ", fmt.Sprintf("error (%v)", err))
 					allOK = false
 				} else {
-					ok("data directory", p.Root())
+					ok("git           ", strings.TrimSpace(string(out)))
 				}
+			}
 
-				if p != nil {
-					if _, err := os.Stat(p.DB()); os.IsNotExist(err) {
-						warn("database      ", "not found "+sDim.Render("(will be created on first use)"))
-					} else {
-						d, err := db.Open(p.DB())
-						if err != nil {
-							fail("database      ", fmt.Sprintf("error (%v)", err))
-							allOK = false
-						} else {
-							d.Close()
-							ok("database      ", "ok")
-						}
-					}
-				}
+			if _, err := exec.LookPath("gh"); err != nil {
+				warn("gh            ", "not found "+sDim.Render("(optional, needed for PR/CI)"))
+			} else {
+				ok("gh            ", "ok")
+			}
 
-				if p != nil {
-					alive, _ := daemon.IsRunning(p)
-					if alive {
-						ok("daemon        ", "running")
-					} else {
-						warn("daemon        ", "stopped")
-					}
-				}
+			if _, err := exec.LookPath("az"); err != nil {
+				warn("az            ", "not found "+sDim.Render("(optional, needed for Azure DevOps PR/CI)"))
+			} else {
+				ok("az            ", "ok")
+			}
 
-				agents := doctorAgentChecks()
-				fmt.Fprintln(w)
-				fmt.Fprintf(w, "  %s\n", sCyan.Render("Agents"))
-				for _, a := range agents {
-					label := fmt.Sprintf("%-14s", a.name)
-					var found, missing []string
-					for _, bin := range a.binaries {
-						if path, err := exec.LookPath(bin); err != nil {
-							missing = append(missing, bin)
-						} else {
-							found = append(found, path)
-						}
-					}
-					switch {
-					case len(missing) == 0:
-						ok(label, strings.Join(found, ", "))
-					case len(a.binaries) > 1:
-						warn(label, "not found ("+strings.Join(missing, ", ")+")")
-					default:
-						warn(label, "not found")
-					}
-				}
+			p, err := paths.New()
+			if err != nil {
+				fail("data directory", fmt.Sprintf("error resolving paths (%v)", err))
+				allOK = false
+			} else if _, err := os.Stat(p.Root()); os.IsNotExist(err) {
+				fail("data directory", fmt.Sprintf("not found (%s)", p.Root()))
+				allOK = false
+			} else {
+				ok("data directory", p.Root())
+			}
 
-				if p == nil {
-					fail("gate validation", "unavailable: data directory could not be resolved")
-					allOK = false
+			if p != nil {
+				if _, err := os.Stat(p.DB()); os.IsNotExist(err) {
+					warn("database      ", "not found "+sDim.Render("(will be created on first use)"))
 				} else {
-					globalCfg, err := config.LoadGlobal(p.ConfigFile())
+					d, err := db.Open(p.DB())
 					if err != nil {
-						fail("gate validation", fmt.Sprintf("unavailable: load config (%v)", err))
+						fail("database      ", fmt.Sprintf("error (%v)", err))
 						allOK = false
 					} else {
-						cfg := config.Merge(globalCfg, &config.RepoConfig{})
-						if err := cfg.ResolveAgent(cmd.Context(), exec.LookPath); err != nil {
-							fail("gate validation", err.Error())
-							allOK = false
-						} else {
-							ok("gate validation", fmt.Sprintf("%s is runnable", cfg.Agent))
-						}
+						d.Close()
+						ok("database      ", "ok")
 					}
 				}
+			}
 
-				if !allOK {
-					fmt.Fprintln(w)
-					fmt.Fprintf(w, "  %s\n", sRed.Render("some checks failed"))
-					return "error", nil
+			if p != nil {
+				alive, _ := daemon.IsRunning(p)
+				if alive {
+					ok("daemon        ", "running")
+				} else {
+					warn("daemon        ", "stopped")
 				}
+			}
 
-				return "success", nil
-			})
+			agents := doctorAgentChecks()
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "  %s\n", sCyan.Render("Agents"))
+			for _, a := range agents {
+				label := fmt.Sprintf("%-14s", a.name)
+				var found, missing []string
+				for _, bin := range a.binaries {
+					if path, err := exec.LookPath(bin); err != nil {
+						missing = append(missing, bin)
+					} else {
+						found = append(found, path)
+					}
+				}
+				switch {
+				case len(missing) == 0:
+					ok(label, strings.Join(found, ", "))
+				case len(a.binaries) > 1:
+					warn(label, "not found ("+strings.Join(missing, ", ")+")")
+				default:
+					warn(label, "not found")
+				}
+			}
+
+			if p == nil {
+				fail("gate validation", "unavailable: data directory could not be resolved")
+				allOK = false
+			} else {
+				globalCfg, err := config.LoadGlobal(p.ConfigFile())
+				if err != nil {
+					fail("gate validation", fmt.Sprintf("unavailable: load config (%v)", err))
+					allOK = false
+				} else {
+					cfg := config.Merge(globalCfg, &config.RepoConfig{})
+					if err := cfg.ResolveAgent(cmd.Context(), exec.LookPath); err != nil {
+						fail("gate validation", err.Error())
+						allOK = false
+					} else {
+						ok("gate validation", fmt.Sprintf("%s is runnable", cfg.Agent))
+					}
+				}
+			}
+
+			if !allOK {
+				fmt.Fprintln(w)
+				fmt.Fprintf(w, "  %s\n", sRed.Render("some checks failed"))
+				return nil
+			}
+
+			return nil
 		},
 	}
 }

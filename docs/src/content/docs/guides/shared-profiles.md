@@ -9,10 +9,12 @@ repo's config, instead of copy-pasting `.no-mistakes.yaml` and skill files into
 every repo and re-copying on every change.
 
 A profile lives on the daemon host under `<NM_HOME>/profiles/<name>/` and is
-selected by a repo's `profile: <name>` field. Because that field decides which
-shell commands and which agent prompts run, it is a **trusted-only** selection:
-it is read from the repo's default branch, never from a pushed branch (see
-[Trust model](#trust-model)).
+selected either by a repo's `profile: <name>` field or by a **host-local
+binding** (`no-mistakes profile use <name>`, see
+[below](#bind-a-repo-locally-nothing-committed-to-the-repo)). Because the
+repo-config field decides which shell commands and which agent prompts run, it
+is a **trusted-only** selection: it is read from the repo's default branch,
+never from a pushed branch (see [Trust model](#trust-model)).
 
 ## Layout
 
@@ -73,6 +75,47 @@ profile: team-ios
 
 With no `steps:` of its own, the repo's pipeline **is** the profile's step list.
 
+## Bind a repo locally (nothing committed to the repo)
+
+Some repos cannot carry a `.no-mistakes.yaml` at all — a work repo on Azure
+DevOps where you can't (or won't) commit tool config, an upstream you don't
+control, a one-off clone. For those, bind the repo to a profile **on this
+machine only**:
+
+```bash
+cd ~/work/some-ado-repo
+no-mistakes profile use team-ios
+```
+
+The binding is stored in the local no-mistakes database — **zero files are
+committed to the repo** — and from then on the profile's full pipeline (steps +
+skills + instructions) gates every run for that repo. With no repo
+`.no-mistakes.yaml` the profile's steps are the whole pipeline; if the repo
+does have trusted `steps:`, they compose with the profile via the same
+`- use: profile` splice sentinel as the repo-config path.
+
+Precedence: a host-local binding **wins** over the repo config's `profile:`
+field. Both are trusted selections, but the binding is the machine owner's more
+specific, host-side decision. When both are set and differ, the daemon logs
+that the local binding overrode the repo-config profile.
+
+Because nothing about the binding comes from the repo, it does **not** require
+the trusted default-branch fetch to succeed — unlike a repo-config `profile:`,
+which fails the run when it cannot be verified. The bound profile itself is
+still loaded fail-closed: if it is missing or invalid, the run fails at start
+(never a silent fall back to the default pipeline).
+
+Related commands (see the [CLI reference](/no-mistakes/reference/cli/#no-mistakes-profile)):
+
+```bash
+no-mistakes profile use <name>      # bind the current repo (host-local)
+no-mistakes profile use --clear     # remove the binding
+no-mistakes profile show            # current selection and which source wins
+no-mistakes profile list            # profiles under <NM_HOME>/profiles
+no-mistakes profile lint <name>     # validate a profile with the daemon's rules
+no-mistakes init --profile <name>   # bind at init time
+```
+
 ## Composing profile + repo steps
 
 If a repo also wants its own steps, it must say **where** the profile's steps
@@ -112,8 +155,11 @@ than silently dropping to the default pipeline:
   indistinguishable from "no `steps:` configured" and silently run the default
   pipeline in place of the shared gate;
 - a profile step with **`mode: revise`** (see above);
-- a **default-branch fetch failure** on a repo that names a profile — the
-  selection cannot be verified, so the run stops instead of running ungated.
+- a **default-branch fetch failure** on a repo that names a profile in its
+  config — the selection cannot be verified, so the run stops instead of
+  running ungated. (A host-local binding is exempt from this one check: nothing
+  about it comes from the repo, so there is nothing to verify against the
+  default branch. A missing/invalid *bound* profile still fails the run.)
 
 A missing skill *file* inside an otherwise-valid profile parks the individual
 skill step with a misconfiguration finding, matching built-in skill steps.
@@ -132,6 +178,12 @@ under `<NM_HOME>/profiles/`, a path no pushed commit can address. Its trust
 anchor is filesystem ownership on the daemon host — the same class as
 `~/.no-mistakes/config.yaml`, which already selects the agent binary that runs
 with the maintainer's credentials.
+
+A **host-local binding** (`no-mistakes profile use`) sits in that same class:
+it is authored by the machine owner through the CLI and stored in the local
+database, so it is trusted by definition — exactly like the global config that
+already selects `agent`. It does not weaken the pushed-branch trust model:
+pushed branches still control nothing about profile selection or content.
 
 `ignore_patterns` is read from the trusted default-branch config as well, so a
 pushed branch cannot hollow out the profile's review-type gates by ignoring

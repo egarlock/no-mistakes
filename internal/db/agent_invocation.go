@@ -13,7 +13,7 @@ const (
 // Fallback reasons classify why a resume failed and forced a fresh-session
 // retry. They are low-cardinality and content-free (never the error text, which
 // can embed agent output), so a silent-fallback regression is both countable
-// and diagnosable from telemetry alone.
+// and diagnosable from the local performance record alone.
 const (
 	FallbackReasonTransient   = "transient"   // retryable provider/transport error
 	FallbackReasonParse       = "parse"       // could not parse the resumed output
@@ -26,8 +26,8 @@ const (
 // AgentInvocation is one agent process invocation's local performance
 // evidence. It stores identity, timing, session mode, bounded activity counts,
 // and token usage only - never prompts, model outputs, diffs, raw command
-// arguments, or credentials - and it stays local: no per-invocation record is
-// ever sent to remote telemetry.
+// arguments, or credentials - and it stays local: this build ships no
+// telemetry, so no record ever leaves the machine.
 //
 // Fields typed as pointers are nullable: a nil value means the datum was not
 // reported for this invocation and is recorded as unknown, never a fabricated

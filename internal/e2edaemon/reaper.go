@@ -142,7 +142,6 @@ func tryDaemonStop(e Entry) bool {
 	cmd.Env = append(os.Environ(),
 		"NM_HOME="+e.NMHome,
 		"NM_TEST_START_DAEMON=1",
-		"NO_MISTAKES_TELEMETRY=off",
 		"NO_MISTAKES_NO_UPDATE_CHECK=1",
 	)
 	cmd.Dir = os.TempDir()

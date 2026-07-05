@@ -89,6 +89,62 @@ func TestRepoForkURLRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRepoLocalProfileSetClearRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	if repo.LocalProfile != "" {
+		t.Fatalf("new repo local profile = %q, want empty", repo.LocalProfile)
+	}
+
+	// Set a host-local profile binding.
+	if err := d.SetRepoLocalProfile(repo.ID, "team-ios"); err != nil {
+		t.Fatalf("set local profile: %v", err)
+	}
+	got, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	if got.LocalProfile != "team-ios" {
+		t.Errorf("local profile after set = %q, want %q", got.LocalProfile, "team-ios")
+	}
+
+	// GetRepoByPath must load the binding too (findRepo uses it).
+	byPath, err := d.GetRepoByPath("/home/user/project")
+	if err != nil {
+		t.Fatalf("get repo by path: %v", err)
+	}
+	if byPath.LocalProfile != "team-ios" {
+		t.Errorf("local profile by path = %q, want %q", byPath.LocalProfile, "team-ios")
+	}
+
+	// Setting again overwrites.
+	if err := d.SetRepoLocalProfile(repo.ID, "team-go"); err != nil {
+		t.Fatalf("overwrite local profile: %v", err)
+	}
+	got, err = d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	if got.LocalProfile != "team-go" {
+		t.Errorf("local profile after overwrite = %q, want %q", got.LocalProfile, "team-go")
+	}
+
+	// An empty (or blank) name clears the binding.
+	if err := d.SetRepoLocalProfile(repo.ID, "  "); err != nil {
+		t.Fatalf("clear local profile: %v", err)
+	}
+	got, err = d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	if got.LocalProfile != "" {
+		t.Errorf("local profile after clear = %q, want empty", got.LocalProfile)
+	}
+}
+
 func TestInsertRepoWithID(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepoWithID("custom-id-123", "/home/user/myproject", "git@github.com:user/myproject.git", "develop")
