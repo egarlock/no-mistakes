@@ -31,28 +31,26 @@ func newStatsCmd() *cobra.Command {
 		Short: "Show historical no-mistakes usage stats",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("stats", func() error {
-				_, database, err := openResources()
-				if err != nil {
-					return err
-				}
-				defer database.Close()
+			_, database, err := openResources()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
 
-				if agents || runID != "" {
-					return renderAgentPerfReport(cmd.OutOrStdout(), database, runID)
-				}
+			if agents || runID != "" {
+				return renderAgentPerfReport(cmd.OutOrStdout(), database, runID)
+			}
 
-				stats, err := database.GetStats()
-				if err != nil {
-					return fmt.Errorf("get stats: %w", err)
-				}
+			stats, err := database.GetStats()
+			if err != nil {
+				return fmt.Errorf("get stats: %w", err)
+			}
 
-				fmt.Fprintln(cmd.OutOrStdout(), renderStatsDashboard(stats))
-				return nil
-			})
+			fmt.Fprintln(cmd.OutOrStdout(), renderStatsDashboard(stats))
+			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&agents, "agents", false, "show local agent performance telemetry (per-purpose invocation aggregates)")
+	cmd.Flags().BoolVar(&agents, "agents", false, "show local agent performance metrics (per-purpose invocation aggregates)")
 	cmd.Flags().StringVar(&runID, "run", "", "show one run's agent invocations and parked time (implies --agents)")
 	return cmd
 }

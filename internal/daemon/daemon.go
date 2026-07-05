@@ -18,7 +18,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -130,12 +129,6 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 		return err
 	}
 	defer lock.Release()
-
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
-		defer cancel()
-		_ = telemetry.Close(ctx)
-	}()
 
 	// Point the agent package at our PID tracking dir so any managed
 	// servers we spawn from here on leave crash-recovery breadcrumbs.

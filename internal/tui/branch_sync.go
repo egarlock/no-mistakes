@@ -3,10 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 )
 
 func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int) string {
@@ -68,38 +66,6 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 	return renderBoxWithFooter("Local branch", message, width, footer)
 }
 
-func trackTUISyncAttempt(mode string, state branchsync.State, result string, started time.Time) {
-	telemetry.Track("command", telemetry.Fields{
-		"command":      "tui-sync",
-		"surface":      "tui",
-		"mode":         mode,
-		"status":       result,
-		"result":       result,
-		"state_before": boundedTUISyncValue(state.State),
-		"relation":     boundedTUISyncValue(state.Relation),
-		"target_kind":  boundedTUISyncValue(state.Target.Kind),
-		"run_phase":    boundedTUISyncValue(state.Pipeline.Phase),
-		"pr_state":     boundedTUISyncValue(state.PRState),
-		"reason":       boundedTUISyncValue(state.Safety),
-		"dirty":        !state.Local.Clean && state.Local.Head != "",
-		"duration_ms":  time.Since(started).Milliseconds(),
-	})
-}
-
-func boundedTUISyncValue(value string) string {
-	if value == "" || len(value) > 64 {
-		return "unknown"
-	}
-	for _, r := range value {
-		if (r < 'a' || r > 'z') && r != '_' {
-			return "unknown"
-		}
-	}
-	return value
-}
-
-// recoverableBranchSync reports whether the state is the stranded terminal
-// pipeline_owned custody state that the guarded recovery action can end.
 func recoverableBranchSync(state *branchsync.State) bool {
 	return state != nil && state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable"
 }

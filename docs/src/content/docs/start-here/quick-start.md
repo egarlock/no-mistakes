@@ -3,17 +3,17 @@ title: Quick Start
 description: Initialize no-mistakes and run your first gated push.
 ---
 
-This walks you through your first gated push. For install options other than the macOS/Linux one-liner, see [Installation](/no-mistakes/start-here/installation/).
+This walks you through your first gated push. For all install options, see [Installation](/no-mistakes/start-here/installation/).
 
 ## 1. Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+git clone git@github.com:kunchenguid/no-mistakes.git
+cd no-mistakes
+make install
 ```
 
-The installer drops the binary in `~/.no-mistakes/bin`, links it into `~/.local/bin` or `/usr/local/bin`, and restarts the background daemon. If the restart fails, the install command fails.
-
-Official release binaries installed this way include the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
+`make install` builds the binary into `$(go env GOPATH)/bin` and restarts the background daemon. If the restart fails, the install command fails.
 
 ## 2. Check prerequisites
 

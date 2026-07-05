@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -289,40 +287,6 @@ func TestHumanSyncTTYConfirmationAppliesOnlyAfterYes(t *testing.T) {
 	}
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
 		t.Fatal("confirmed sync did not advance HEAD")
-	}
-}
-
-func TestSyncTelemetryIsOneBoundedPrivacySafeEvent(t *testing.T) {
-	f := newCLISyncFixture(t)
-	recorder := &telemetryRecorder{}
-	restore := telemetry.SetDefaultForTesting(recorder)
-	defer restore()
-	if out, err := executeCmd("axi", "sync", "--check"); err != nil {
-		t.Fatalf("sync check: %v\n%s", err, out)
-	}
-	event := recorder.find("command", "command", "axi-sync")
-	if event == nil {
-		t.Fatal("missing explicit sync command event")
-	}
-	count := 0
-	for _, candidate := range recorder.events {
-		if candidate.name == "command" && candidate.fields["command"] == "axi-sync" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("sync command events = %d, want 1", count)
-	}
-	serialized := fmt.Sprint(event.fields)
-	for _, forbidden := range []string{f.old, f.pushed, f.local, f.remote, "feature/sync", "refs/heads/feature/sync"} {
-		if strings.Contains(serialized, forbidden) {
-			t.Fatalf("telemetry leaked %q: %s", forbidden, serialized)
-		}
-	}
-	for _, want := range []string{"surface:axi", "mode:check", "state_before:behind", "target_kind:upstream", "result:noop"} {
-		if !strings.Contains(serialized, want) {
-			t.Errorf("telemetry missing %q: %s", want, serialized)
-		}
 	}
 }
 

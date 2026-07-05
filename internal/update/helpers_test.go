@@ -24,7 +24,6 @@ func TestMain(m *testing.M) {
 	}
 	_ = os.Setenv("NM_HOME", root)
 	_ = os.Setenv("HOME", home)
-	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
 
 	code := m.Run()
 

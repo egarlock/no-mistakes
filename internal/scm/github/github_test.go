@@ -272,7 +272,7 @@ func TestGetChecksExitConditions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			host := New(githubTestCmdFactory(map[string]githubTestResponse{
 				cmdKey: tc.resp,
-			}), nil, "", "test/repo")
+			}), nil, "", "")
 
 			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 			if tc.wantErr {

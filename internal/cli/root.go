@@ -69,13 +69,11 @@ func newRootCmd() *cobra.Command {
 		// wizard flow is interactive, while --yes auto-accepts defaults and can
 		// still fall back to headless mode when no TTY is available.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("root", func() error {
-				skipSteps, err := parseSkipSteps(skipValue)
-				if err != nil {
-					return err
-				}
-				return attachRun(cmd.Context(), cmd.OutOrStdout(), "", true, autoYes, skipSteps)
-			})
+			skipSteps, err := parseSkipSteps(skipValue)
+			if err != nil {
+				return err
+			}
+			return attachRun(cmd.Context(), cmd.OutOrStdout(), "", true, autoYes, skipSteps)
 		},
 	}
 
@@ -93,6 +91,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newRunsCmd())
 	cmd.AddCommand(newStatsCmd())
 	cmd.AddCommand(newDoctorCmd())
+	cmd.AddCommand(newProfileCmd())
 	cmd.AddCommand(newAxiCmd())
 
 	return cmd

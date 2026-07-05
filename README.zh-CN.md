@@ -67,10 +67,12 @@
 ## 安装
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+git clone git@github.com:kunchenguid/no-mistakes.git
+cd no-mistakes
+make install
 ```
 
-Windows、Go install 以及从源码构建的说明，见[安装指南](https://kunchenguid.github.io/no-mistakes/start-here/installation/)。
+也可以用 `go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest`。Windows 安装说明见[安装指南](https://kunchenguid.github.io/no-mistakes/start-here/installation/)。
 
 ## 快速上手
 

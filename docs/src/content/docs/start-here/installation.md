@@ -3,17 +3,15 @@ title: Installation
 description: All install options, prerequisites, update, and uninstall.
 ---
 
-## macOS / Linux
+## From source (macOS / Linux)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+git clone git@github.com:kunchenguid/no-mistakes.git
+cd no-mistakes
+make install
 ```
 
-The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place.
-
-It also installs or refreshes the background daemon for you by running `no-mistakes daemon restart`, preferring a managed service (launchd on macOS, systemd user service on Linux) and falling back to a detached daemon if that path is unavailable. If the restart fails, the install command fails.
-
-Official release binaries installed this way include the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
+`make install` builds the binary, installs it into `$(go env GOPATH)/bin`, and restarts the background daemon, preferring a managed service (launchd on macOS, systemd user service on Linux) and falling back to a detached daemon if that path is unavailable. Make sure `$(go env GOPATH)/bin` is on your `PATH`.
 
 ## Windows (PowerShell)
 
@@ -23,26 +21,13 @@ irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.
 
 Installs the binary and restarts the background daemon automatically with `no-mistakes.exe daemon restart`, preferring a managed Task Scheduler task and falling back to a detached daemon if needed. If the restart fails, the install command fails.
 
-Official release binaries installed this way include the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
-
 ## Go install
 
 ```sh
 go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest
 ```
 
-`go install` builds the CLI without an embedded telemetry website ID, so telemetry stays off by default unless you later set `NO_MISTAKES_UMAMI_WEBSITE_ID` at runtime.
-
-## From source
-
-```sh
-git clone git@github.com:kunchenguid/no-mistakes.git
-cd no-mistakes
-make build
-make install
-```
-
-`make build` embeds the telemetry host from `NO_MISTAKES_UMAMI_HOST` in a repo-local `.env` first, then `UMAMI_HOST` from the shell, then the default self-hosted host. It embeds the telemetry website ID from `NO_MISTAKES_UMAMI_WEBSITE_ID` in `.env` first, then `UMAMI_WEBSITE_ID` from the shell, then the default website ID.
+`go install` builds and installs the CLI without release version metadata; run `no-mistakes daemon restart` afterwards so the daemon picks up the new binary.
 
 ## Prerequisites
 
@@ -72,8 +57,6 @@ This downloads the latest release from GitHub, verifies the SHA-256 checksum, at
 `no-mistakes update` installs the latest stable release.
 Use `no-mistakes update --beta` to opt into prereleases and install the latest beta when one is newer than the current stable release.
 Use `no-mistakes update -y` to answer yes to the daemon-executable-mismatch prompt described below.
-
-Because `update` installs the latest official release binary, it installs a binary with the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
 If pending or running pipeline runs exist, the update refuses to restart the daemon and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail; `-y`/`--yes` does **not** bypass this guard.
 If the running daemon was started from a different binary, the update still prompts before replacing it; `-y`/`--yes` answers that prompt non-interactively.

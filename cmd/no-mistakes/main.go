@@ -1,18 +1,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/cli"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/update"
 )
 
@@ -52,11 +49,6 @@ func run() int {
 	// leak into user-facing output. The daemon process sets up its own
 	// file-based logger before reaching this point.
 	slog.SetDefault(slog.New(slog.NewTextHandler(cliLogWriter(), nil)))
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
-		defer cancel()
-		_ = telemetry.Close(ctx)
-	}()
 
 	return cli.Execute()
 }

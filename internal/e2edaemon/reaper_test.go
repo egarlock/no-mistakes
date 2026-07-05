@@ -86,7 +86,6 @@ func startDetachedTestDaemon(t *testing.T, bin, nmHome string) int {
 	cmd.Env = append(os.Environ(),
 		"NM_HOME="+nmHome,
 		"NM_TEST_START_DAEMON=1",
-		"NO_MISTAKES_TELEMETRY=off",
 		"NO_MISTAKES_NO_UPDATE_CHECK=1",
 	)
 	cmd.Stdout = logFile
@@ -108,7 +107,6 @@ func startDetachedTestDaemon(t *testing.T, bin, nmHome string) int {
 			status.Env = append(os.Environ(),
 				"NM_HOME="+nmHome,
 				"NM_TEST_START_DAEMON=1",
-				"NO_MISTAKES_TELEMETRY=off",
 				"NO_MISTAKES_NO_UPDATE_CHECK=1",
 			)
 			out, _ := status.CombinedOutput()
@@ -349,7 +347,6 @@ func runSigkillChildHelper() {
 	cmd.Env = append(os.Environ(),
 		"NM_HOME="+nmHome,
 		"NM_TEST_START_DAEMON=1",
-		"NO_MISTAKES_TELEMETRY=off",
 		"NO_MISTAKES_NO_UPDATE_CHECK=1",
 	)
 	cmd.Stdout = logFile

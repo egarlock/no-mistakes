@@ -257,6 +257,63 @@ func TestOpenMigratesStepActivityColumns(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesReposLocalProfileColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
+
+	legacyDB, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacyDB.Exec(`
+		CREATE TABLE repos (
+			id TEXT PRIMARY KEY,
+			working_path TEXT NOT NULL UNIQUE,
+			upstream_url TEXT NOT NULL,
+			fork_url TEXT,
+			default_branch TEXT NOT NULL DEFAULT 'main',
+			created_at INTEGER NOT NULL
+		);
+		INSERT INTO repos (id, working_path, upstream_url, default_branch, created_at)
+		VALUES ('repo-1', '/work/repo', 'git@github.com:parent/repo.git', 'main', 123);
+	`); err != nil {
+		legacyDB.Close()
+		t.Fatalf("create legacy repos table: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	if !hasColumn(t, d, "repos", "local_profile") {
+		t.Fatal("expected migrated local_profile column")
+	}
+	repo, err := d.GetRepo("repo-1")
+	if err != nil {
+		t.Fatalf("get migrated repo: %v", err)
+	}
+	if repo == nil {
+		t.Fatal("expected migrated repo")
+	}
+	if repo.LocalProfile != "" {
+		t.Fatalf("local profile = %q, want empty", repo.LocalProfile)
+	}
+	if err := d.SetRepoLocalProfile(repo.ID, "team-ios"); err != nil {
+		t.Fatalf("set local profile on migrated repo: %v", err)
+	}
+	updated, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get updated repo: %v", err)
+	}
+	if updated.LocalProfile != "team-ios" {
+		t.Fatalf("local profile after set = %q, want %q", updated.LocalProfile, "team-ios")
+	}
+}
+
 func hasColumn(t *testing.T, d *DB, table, column string) bool {
 	t.Helper()
 	rows, err := d.sql.Query(`PRAGMA table_info(` + table + `)`)

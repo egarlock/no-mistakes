@@ -6,13 +6,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 )
 
 func TestDoctorACPAliasRequiresBothBinaries(t *testing.T) {
-	restore := telemetry.SetDefaultForTesting(&telemetryRecorder{})
-	defer restore()
 
 	t.Setenv("NM_HOME", t.TempDir())
 
@@ -32,8 +28,6 @@ func TestDoctorACPAliasRequiresBothBinaries(t *testing.T) {
 }
 
 func TestDoctorACPAliasDetectedWithBothBinaries(t *testing.T) {
-	restore := telemetry.SetDefaultForTesting(&telemetryRecorder{})
-	defer restore()
 
 	t.Setenv("NM_HOME", t.TempDir())
 
