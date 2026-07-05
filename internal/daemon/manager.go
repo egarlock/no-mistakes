@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -281,9 +282,15 @@ func loadTrustedSkillBodies(ctx context.Context, wtDir, trustedSHA string, specs
 // pushed commit can address, so nothing here is read from the worktree.
 //
 // It fails closed (returns an error) when the name is unsafe, the directory or
-// profile.yaml is missing/unreadable, or profile.yaml does not parse — a
-// missing/broken profile is a run-start error, never a silent fall back to the
-// default pipeline (mirrors a bad steps: config).
+// profile.yaml is missing/unreadable, profile.yaml does not parse, defines no
+// steps, or carries a `mode: revise` skill step — a missing/broken profile is
+// a run-start error, never a silent fall back to the default pipeline
+// (mirrors a bad steps: config). Zero steps fails because BuildPipeline treats
+// an empty list as "run the default pipeline", so an empty/typo'd profile.yaml
+// would otherwise silently replace the team gate with the default pipeline.
+// Revise-mode steps fail because a shared profile driving fleet-wide
+// auto-commits is a deliberately deferred design decision; until it is made,
+// mutating skill steps must be defined in a repo's own steps: list.
 func (m *RunManager) loadProfile(name string) (*config.ProfileConfig, string, error) {
 	if !steps.ValidCustomName(name) {
 		return nil, "", fmt.Errorf("invalid profile name %q (use lowercase letters, digits, '-' and '_', starting with a letter or digit)", name)
@@ -298,7 +305,37 @@ func (m *RunManager) loadProfile(name string) (*config.ProfileConfig, string, er
 	if err != nil {
 		return nil, "", fmt.Errorf("parse profile %q: %w", name, err)
 	}
+	if len(profile.Steps) == 0 {
+		return nil, "", fmt.Errorf("profile %q defines no steps (%s); refusing to silently run the default pipeline in place of the shared gate", name, profilePath)
+	}
+	for i, spec := range profile.Steps {
+		if spec.IsSkill() && spec.Mode == steps.SkillModeRevise {
+			return nil, "", fmt.Errorf("profile %q steps[%d] (%q): mode: revise steps are not yet supported in shared profiles; define them in the repo's own steps: list", name, i, spec.Name)
+		}
+	}
 	return profile, profileDir, nil
+}
+
+// unverifiedProfileError returns the fail-closed error for a run whose repo
+// names a shared gate profile while the trusted default-branch config could
+// not be resolved at all (fetch or resolve failure → empty trustedSHA). For
+// commands/agent/steps "fail closed = force empty" is safe — built-in defaults
+// run instead — but silently dropping a selected profile would gate the run
+// with the default pipeline in place of the team gate, which the profile docs
+// promise never happens. Failing the run at start adds no attack surface: a
+// contributor setting `profile:` on a pushed branch can only make their own
+// run fail. When the fetch succeeded (trustedSHA non-empty) the trusted copy
+// is authoritative as usual — including the case where the file is simply
+// absent on the default branch, where no profile is genuinely selected and
+// the pushed value is ignored.
+func unverifiedProfileError(trustedSHA string, pushed *config.RepoConfig) error {
+	if trustedSHA != "" || pushed == nil {
+		return nil
+	}
+	if name := strings.TrimSpace(pushed.Profile); name != "" {
+		return fmt.Errorf("cannot verify the trusted profile selection %q: the default branch could not be fetched/resolved; refusing to run without the shared gate", name)
+	}
+	return nil
 }
 
 // profilePathWithinDir joins a profile-relative file path onto the profile
@@ -621,15 +658,25 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// trusted copy (fetch failed, no default branch, or no file on it) the
 	// opt-in is false and commands/agent are forced empty — fail closed.
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
+	// Fail closed on an unverifiable profile selection: with no trusted SHA a
+	// selected shared gate must stop the run, never silently degrade to the
+	// default pipeline.
+	if err := unverifiedProfileError(trustedSHA, repoCfg); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("load_profile")
+		return "", err
+	}
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent/steps from pushed branch", "run_id", run.ID, "branch", branch)
-	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !config.StepSpecsEqual(repoCfg.Steps, effectiveRepoCfg.Steps) {
+	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !config.StepSpecsEqual(repoCfg.Steps, effectiveRepoCfg.Steps) ||
+		repoCfg.Profile != effectiveRepoCfg.Profile || !slices.Equal(repoCfg.IgnorePatterns, effectiveRepoCfg.IgnorePatterns) {
 		// Surface the silent override so a maintainer who shipped a commands.*,
-		// agent, or steps change on a feature branch understands why it did not
-		// run. This is not an error: it is the secure default in action.
-		slog.Info("repo commands/agent/steps loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
+		// agent, steps, ignore_patterns, or profile change on a feature branch
+		// understands why it did not run. This is not an error: it is the
+		// secure default in action.
+		slog.Info("repo commands/agent/steps/ignore_patterns/profile loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 	// Resolve the repo's own step instructions + skill bodies at the trusted

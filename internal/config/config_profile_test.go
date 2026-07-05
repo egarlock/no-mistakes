@@ -103,6 +103,31 @@ func TestLoadProfileFromBytes_Invalid(t *testing.T) {
 	}
 }
 
+// A profile has exactly two legal keys; a typo like `step:` must fail parsing
+// instead of silently yielding zero steps (which would hand the gate to the
+// default pipeline).
+func TestLoadProfileFromBytes_UnknownKeyRejected(t *testing.T) {
+	if _, err := LoadProfileFromBytes([]byte("version: 1\nstep:\n  - review\n  - push\n")); err == nil {
+		t.Fatal("expected an error for unknown key `step:` (typo of steps:)")
+	}
+	if _, err := LoadProfileFromBytes([]byte("version: 1\nname: team-ios\nsteps: [push]\n")); err == nil {
+		t.Fatal("expected an error for unknown key `name:`")
+	}
+}
+
+// An empty document parses to a zero-step config without error; rejecting a
+// zero-step profile is the daemon loader's job, where the error can name the
+// profile and its path.
+func TestLoadProfileFromBytes_EmptyDocument(t *testing.T) {
+	profile, err := LoadProfileFromBytes(nil)
+	if err != nil {
+		t.Fatalf("LoadProfileFromBytes(empty): %v", err)
+	}
+	if len(profile.Steps) != 0 {
+		t.Errorf("steps = %d, want 0", len(profile.Steps))
+	}
+}
+
 func TestStepSpec_UseUnmarshal(t *testing.T) {
 	cfg, err := parseRepoConfig([]byte("steps:\n  - use: profile\n  - push\n"))
 	if err != nil {

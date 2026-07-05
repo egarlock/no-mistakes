@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -806,9 +807,20 @@ type ProfileConfig struct {
 // LoadProfileFromBytes parses a profile.yaml. It is the trusted-config entry
 // point for a host-local profile: the bytes come from <NM_HOME>/profiles, a
 // path no pushed commit can address, so there is no default-branch SHA to pin.
+//
+// A profile is host-authored config with exactly two legal keys (version,
+// steps), so unknown keys are rejected: a typo like `step:` must fail loudly
+// rather than parse to zero steps and silently hand the gate to the default
+// pipeline. An empty document parses to an empty ProfileConfig; the caller
+// (loadProfile) rejects a profile with no steps.
 func LoadProfileFromBytes(data []byte) (*ProfileConfig, error) {
 	cfg := &ProfileConfig{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return cfg, nil
+		}
 		return nil, fmt.Errorf("parse profile config: %w", err)
 	}
 	return cfg, nil
@@ -893,9 +905,17 @@ func checkUseSentinels(steps []StepSpec) error {
 // this blocks the supply-chain vector for repos that ship .no-mistakes.yaml
 // only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, intent, test) are always
+// IgnorePatterns is not code-executing, but it selects whether validation
+// executes at all: a pushed `ignore_patterns: ["*"]` would turn every
+// review-type gate (built-in review, repo skill reviews, and every
+// review-type step a shared profile supplies) into a no-op. It is therefore
+// treated like the selection fields: taken from the trusted copy unless the
+// maintainer opted in via allowRepoCommands, and forced empty when there is
+// no trusted copy.
+//
+// The remaining non-executing fields (auto-fix, intent, test) are always
 // taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell or select a process.
+// run arbitrary shell, select a process, or suppress a gate.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -919,10 +939,12 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Commands = trusted.Commands
 		effective.Agent = trusted.Agent
 		effective.Steps = trusted.Steps
+		effective.IgnorePatterns = trusted.IgnorePatterns
 	} else {
 		effective.Commands = Commands{}
 		effective.Agent = ""
 		effective.Steps = nil
+		effective.IgnorePatterns = nil
 	}
 	return &effective
 }
