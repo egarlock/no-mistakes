@@ -115,6 +115,21 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 	return Run(ctx, dir, "config", "--get", "remote."+name+".url")
 }
 
+// HasRemote reports whether a remote named name is configured in the repo at
+// dir, returning an error if the remote list cannot be read.
+func HasRemote(ctx context.Context, dir, name string) (bool, error) {
+	out, err := Run(ctx, dir, "remote")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // FindGitRoot walks up from path to find the git repository root.
 // Resolves symlinks for consistency on macOS (e.g. /tmp -> /private/tmp).
 func FindGitRoot(path string) (string, error) {
