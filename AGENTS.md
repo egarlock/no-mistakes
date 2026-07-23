@@ -105,6 +105,7 @@ Safest local verification sequence after non-trivial changes:
 - Packages whose tests can start a daemon or touch ambient state (`cmd/no-mistakes`, `internal/cli`, `internal/update`) use a package-wide `TestMain` that points `NM_HOME` and `HOME` at fresh temp dirs and disables telemetry/update-check env vars, so a full test run never touches a real `~/.no-mistakes`. Follow the same pattern in new such packages.
 - `paths.New()` refuses the default `~/.no-mistakes` root under `go test`; tests that touch app state must set `NM_HOME` to a temp dir, and only the production-default path test may opt in with `NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS=1`.
 - Isolate filesystem and environment state with `t.TempDir()` and `t.Setenv()`.
+- The e2e harness sets `NM_TEST_SKIP_LOGIN_SHELL_ENV=1` so the daemon keeps the test process environment verbatim instead of overlaying the login shell's (`prepareDaemonEnvironment`, `internal/daemon/daemon.go`). Without it, macOS `/etc/zprofile` runs `path_helper`, which rebuilds PATH with system dirs first and demotes the harness `BinDir` stub prefix below a real `/opt/homebrew/bin/gh` - so the pipeline hits the real (unauthenticated-under-temp-HOME) gh, PR/CI steps silently skip, and `TestForkRouting` fails on macOS while passing on Linux CI (bash login shells preserve inherited PATH order). Any e2e test that depends on a stubbed binary resolving via PATH inside the daemon depends on this flag. Regression: `TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested`.
 
 **Repo Config Trust Boundary (security)**
 
