@@ -38,13 +38,18 @@ func TestFixtureRootFromRepoRoot(t *testing.T) {
 	}
 }
 
-func TestDaemonStartTimeoutLeavesRoomForLoginShellProbe(t *testing.T) {
+// TestDaemonStartTimeoutKeepsSafetyMargin pins the harness daemon start budget.
+// The harness sets NM_TEST_SKIP_LOGIN_SHELL_ENV=1, so startup no longer spends
+// time resolving the login-shell environment; the timeout is now plain safety
+// margin for a cold binary start on a loaded machine. Keep it generous - a too
+// tight value turns machine load into confusing e2e flakes.
+func TestDaemonStartTimeoutKeepsSafetyMargin(t *testing.T) {
 	timeout, err := time.ParseDuration(e2eDaemonStartTimeout)
 	if err != nil {
 		t.Fatalf("parse e2eDaemonStartTimeout: %v", err)
 	}
-	if timeout <= 30*time.Second {
-		t.Fatalf("e2eDaemonStartTimeout = %v, want more than the 30s login-shell probe budget", timeout)
+	if timeout < 30*time.Second {
+		t.Fatalf("e2eDaemonStartTimeout = %v, want at least 30s of startup safety margin", timeout)
 	}
 }
 

@@ -70,6 +70,11 @@ func TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested(t *testing.T) 
 		return nil
 	}
 
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(oldLogger)
+
 	if err := prepareDaemonEnvironment(); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +83,12 @@ func TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested(t *testing.T) 
 	}
 	if got := os.Getenv("CLAUDECODE"); got != "" {
 		t.Fatalf("expected CLAUDECODE cleared even when skipping shell env, got %q", got)
+	}
+	// The skip must be readable from the daemon log alone: if the flag ever
+	// leaks into a real daemon's environment the #143 PATH fix turns off, and
+	// this field is the only hint why the daemon resolves an unexpected PATH.
+	if out := buf.String(); !strings.Contains(out, "login_shell_env_skipped=true") {
+		t.Fatalf("expected login_shell_env_skipped=true in log, got %q", out)
 	}
 }
 
@@ -137,5 +148,8 @@ func TestPrepareDaemonEnvironment_LogsPathSummary(t *testing.T) {
 	}
 	if !strings.Contains(out, "/a/bin") {
 		t.Fatalf("expected full PATH in log for debuggability, got %q", out)
+	}
+	if !strings.Contains(out, "login_shell_env_skipped=false") {
+		t.Fatalf("expected login_shell_env_skipped=false in log, got %q", out)
 	}
 }

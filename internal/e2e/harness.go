@@ -172,8 +172,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// BinDir below a real /opt/homebrew/bin gh - breaking both the gh stub
 	// guard rail above and any test (fork routing) that depends on the stub.
 	t.Setenv("NM_TEST_SKIP_LOGIN_SHELL_ENV", "1")
-	// Give the daemon room to come up. Startup may spend up to 30s resolving
-	// the login-shell environment before the IPC socket is opened.
+	// Give the daemon room to come up. The login-shell probe that used to
+	// dominate startup is disabled above, so this is now plain safety margin
+	// for a cold binary start on a loaded CI machine, not a probe budget.
 	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", e2eDaemonStartTimeout)
 
 	// Disable background update checks so helper processes do not write
