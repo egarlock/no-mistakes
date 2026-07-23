@@ -866,7 +866,29 @@ func revList(ctx context.Context, dir string, args ...string) ([]string, error) 
 	return strings.Fields(out), nil
 }
 
+// EquivalenceDetectionSupported reports whether the host git can run the
+// three-way `git merge-tree --write-tree --merge-base` form that
+// equivalent-divergence classification depends on. That form landed in git
+// 2.40; older builds (notably Apple Git 2.39.x, still the default on macOS)
+// reject `--merge-base` outright.
+//
+// This is a capability probe, not a gate: when it is false the classification
+// simply never reports SafetySafeEquivalentAdvance, so an equivalent-diverged
+// branch stays blocked_diverged and `no-mistakes sync` refuses instead of
+// touching refs. Failing safe is the correct behavior for a tool whose job is
+// not to lose people's code; the only cost is that the convenience path is
+// unavailable until git is upgraded. Tests for that path use this to skip.
+func EquivalenceDetectionSupported(ctx context.Context, dir string) bool {
+	_, err := git.Run(ctx, dir, "merge-tree", "--write-tree", "--merge-base", "HEAD", "HEAD", "HEAD")
+	if err == nil {
+		return true
+	}
+	return !strings.Contains(err.Error(), "unknown option")
+}
+
 func mergeTreePreservesFinalHead(ctx context.Context, dir, base, local, pushed string) bool {
+	// Requires git >= 2.40 (see EquivalenceDetectionSupported); on older git
+	// this errors and the branch stays classified as plainly diverged.
 	mergedTree, err := git.Run(ctx, dir, "merge-tree", "--write-tree", "--merge-base", base, pushed, local)
 	if err != nil {
 		return false

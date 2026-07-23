@@ -240,6 +240,7 @@ func TestApplyCleanStrictBehindFastForwardsExactBoundHead(t *testing.T) {
 
 func TestApplyEquivalentButDivergedRebaseWithPipelineCommitsAnchorsAndAdvances(t *testing.T) {
 	f := newSyncFixture(t)
+	requireEquivalenceDetection(t, f.local)
 	rebuildPipelineHead(t, f, []pipelineCommit{
 		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
 		{message: "pipeline doc", files: map[string]string{"doc.txt": "pipeline doc\n"}},
@@ -318,6 +319,9 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSplitLocalSyncFixture(t)
+			if tc.wantSafe == SafetySafeEquivalentAdvance {
+				requireEquivalenceDetection(t, f.local)
+			}
 			rebuildPipelineHead(t, f, tc.commits)
 
 			state := f.service.Refresh(f.ctx)
@@ -330,6 +334,7 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 
 func TestEquivalentDivergenceAcceptsSamePathPipelineFix(t *testing.T) {
 	f := newSyncFixture(t)
+	requireEquivalenceDetection(t, f.local)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "base\nstable\n")
 	mustRun(t, f.local, "commit", "-am", "expand base file")
 	f.base = mustRun(t, f.local, "rev-parse", "HEAD")
@@ -417,6 +422,7 @@ func TestEquivalentDivergenceRefusesWrongRepeatedLineOccurrence(t *testing.T) {
 
 func TestEquivalentDivergenceAcceptsShiftedPreservedHunk(t *testing.T) {
 	f := newSyncFixture(t)
+	requireEquivalenceDetection(t, f.local)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "alpha\nbase\nomega\n")
 	mustRun(t, f.local, "commit", "-am", "expand base file")
 	f.base = mustRun(t, f.local, "rev-parse", "HEAD")
@@ -464,6 +470,7 @@ func TestEquivalentDivergenceRefusesUnrepresentedEdgeDeletion(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newSyncFixture(t)
+			requireEquivalenceDetection(t, f.local)
 			mustWrite(t, filepath.Join(f.local, "edge.txt"), tc.base)
 			mustRun(t, f.local, "add", "edge.txt")
 			mustRun(t, f.local, "commit", "-m", "add edge file")
@@ -816,4 +823,16 @@ func readOptional(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// requireEquivalenceDetection skips a test that exercises the
+// equivalent-divergence convenience path when the host git predates the
+// `merge-tree --merge-base` form it needs (git < 2.40, e.g. Apple Git 2.39.x).
+// The product behavior there is to refuse the sync, which is fail-safe; only
+// this test's premise is unavailable.
+func requireEquivalenceDetection(t *testing.T, dir string) {
+	t.Helper()
+	if !EquivalenceDetectionSupported(context.Background(), dir) {
+		t.Skip("host git lacks `merge-tree --write-tree --merge-base` (requires git >= 2.40)")
+	}
 }

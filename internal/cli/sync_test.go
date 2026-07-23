@@ -191,6 +191,11 @@ func TestAxiSyncCheckAndApplyReturnFullStructuredState(t *testing.T) {
 
 func TestAxiSyncEquivalentDivergedCheckAndApply(t *testing.T) {
 	f := newCLISyncFixture(t)
+	// Equivalent-divergence classification needs `merge-tree --merge-base`
+	// (git >= 2.40); on older git the sync fails safe and refuses instead.
+	if !branchsync.EquivalenceDetectionSupported(context.Background(), f.local) {
+		t.Skip("host git lacks `merge-tree --write-tree --merge-base` (requires git >= 2.40)")
+	}
 	rewriteCLIPipelineHead(t, &f, []pipelineCommitForCLI{
 		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
 		{message: "pipeline doc", files: map[string]string{"doc.txt": "pipeline doc\n"}},
