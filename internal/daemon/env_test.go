@@ -51,6 +51,47 @@ func TestPrepareDaemonEnvironment_RemovesClaudeSessionVarsAndAppliesShellEnv(t *
 	}
 }
 
+// TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested pins the e2e
+// escape hatch: with NM_TEST_SKIP_LOGIN_SHELL_ENV=1 the daemon must keep its
+// inherited environment verbatim instead of overlaying the login shell's.
+// The e2e harness depends on this so its stub-binary PATH prefix (fake gh and
+// agents) survives on macOS, where /etc/zprofile's path_helper rebuilds PATH
+// with system dirs first and would demote the stubs below the real gh.
+func TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested(t *testing.T) {
+	t.Setenv("NM_TEST_SKIP_LOGIN_SHELL_ENV", "1")
+	t.Setenv("PATH", "/stub/bin"+string(os.PathListSeparator)+"/usr/bin")
+	t.Setenv("CLAUDECODE", "1")
+
+	oldApply := applyShellEnvToProcess
+	defer func() { applyShellEnvToProcess = oldApply }()
+
+	applyShellEnvToProcess = func() error {
+		t.Fatal("login shell env must not be applied when NM_TEST_SKIP_LOGIN_SHELL_ENV=1")
+		return nil
+	}
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(oldLogger)
+
+	if err := prepareDaemonEnvironment(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("PATH"); got != "/stub/bin"+string(os.PathListSeparator)+"/usr/bin" {
+		t.Fatalf("PATH = %q, want inherited PATH preserved", got)
+	}
+	if got := os.Getenv("CLAUDECODE"); got != "" {
+		t.Fatalf("expected CLAUDECODE cleared even when skipping shell env, got %q", got)
+	}
+	// The skip must be readable from the daemon log alone: if the flag ever
+	// leaks into a real daemon's environment the #143 PATH fix turns off, and
+	// this field is the only hint why the daemon resolves an unexpected PATH.
+	if out := buf.String(); !strings.Contains(out, "login_shell_env_skipped=true") {
+		t.Fatalf("expected login_shell_env_skipped=true in log, got %q", out)
+	}
+}
+
 func TestPrepareDaemonEnvironment_PreservesExistingNMHome(t *testing.T) {
 	t.Setenv("NM_HOME", "/service/root")
 	t.Setenv("PATH", os.Getenv("PATH"))
@@ -107,5 +148,8 @@ func TestPrepareDaemonEnvironment_LogsPathSummary(t *testing.T) {
 	}
 	if !strings.Contains(out, "/a/bin") {
 		t.Fatalf("expected full PATH in log for debuggability, got %q", out)
+	}
+	if !strings.Contains(out, "login_shell_env_skipped=false") {
+		t.Fatalf("expected login_shell_env_skipped=false in log, got %q", out)
 	}
 }

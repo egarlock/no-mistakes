@@ -390,6 +390,10 @@ func TestProfilePathWithinDir(t *testing.T) {
 		{"../secret.md", false},
 		{"../../etc/passwd", false},
 		{"/etc/passwd", false},
+		// Rootedness must be judged the same on every OS: filepath.IsAbs misses
+		// "/etc/passwd" on Windows and the backslash/drive forms on unix.
+		{`\windows\system32`, false},
+		{`C:\windows\system32`, false},
 		{"", false},
 	}
 	for _, c := range cases {

@@ -103,15 +103,23 @@ func prepareDaemonEnvironment() error {
 			return fmt.Errorf("unset %s: %w", key, err)
 		}
 	}
-	if err := applyShellEnvToProcess(); err != nil {
-		return fmt.Errorf("apply login shell environment: %w", err)
+	// NM_TEST_SKIP_LOGIN_SHELL_ENV keeps the inherited environment verbatim.
+	// The e2e harness sets it so its stub-binary PATH prefix (fake gh and
+	// agents) survives: on macOS the login-shell overlay runs /etc/zprofile's
+	// path_helper, which rebuilds PATH with system dirs first and demotes the
+	// harness stubs below a real gh install.
+	skipLoginShellEnv := os.Getenv("NM_TEST_SKIP_LOGIN_SHELL_ENV") == "1"
+	if !skipLoginShellEnv {
+		if err := applyShellEnvToProcess(); err != nil {
+			return fmt.Errorf("apply login shell environment: %w", err)
+		}
 	}
 	if nmHome != "" {
 		if err := os.Setenv("NM_HOME", nmHome); err != nil {
 			return fmt.Errorf("restore NM_HOME: %w", err)
 		}
 	}
-	logDaemonPathSummary()
+	logDaemonPathSummary(skipLoginShellEnv)
 	return nil
 }
 
@@ -120,7 +128,11 @@ func prepareDaemonEnvironment() error {
 // lifecycle log alone. The daemon installs its lifecycle handler at info
 // before environment preparation, then reapplies the configured level after
 // loading global config, so this startup diagnostic is always retained.
-func logDaemonPathSummary() {
+// loginShellEnvSkipped reports whether the login-shell overlay was bypassed
+// via NM_TEST_SKIP_LOGIN_SHELL_ENV, so a daemon that inherited that flag
+// outside the e2e harness is diagnosable from the same line rather than
+// looking like an unexplained PATH regression.
+func logDaemonPathSummary(loginShellEnvSkipped bool) {
 	path := os.Getenv("PATH")
 	entries := 0
 	if path != "" {
@@ -128,6 +140,7 @@ func logDaemonPathSummary() {
 	}
 	slog.Info("daemon environment ready",
 		"path_entries", entries,
+		"login_shell_env_skipped", loginShellEnvSkipped,
 		"path", path,
 	)
 }

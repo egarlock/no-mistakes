@@ -170,8 +170,15 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// Skip launchd/systemd/schtasks installation in the daemon. Without
 	// this the daemon would touch the developer's real launch agents.
 	t.Setenv("NM_TEST_START_DAEMON", "1")
-	// Give the daemon room to come up. Startup may spend up to 30s resolving
-	// the login-shell environment before the IPC socket is opened.
+	// Keep the daemon's inherited environment verbatim instead of overlaying
+	// the login shell's. On macOS the overlay runs /etc/zprofile's
+	// path_helper, which rebuilds PATH with system dirs first and demotes
+	// BinDir below a real /opt/homebrew/bin gh - breaking both the gh stub
+	// guard rail above and any test (fork routing) that depends on the stub.
+	t.Setenv("NM_TEST_SKIP_LOGIN_SHELL_ENV", "1")
+	// Give the daemon room to come up. The login-shell probe that used to
+	// dominate startup is disabled above, so this is now plain safety margin
+	// for a cold binary start on a loaded CI machine, not a probe budget.
 	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", e2eDaemonStartTimeout)
 
 	// Disable background update checks so helper processes do not write
