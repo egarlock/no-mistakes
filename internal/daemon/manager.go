@@ -418,8 +418,14 @@ func (m *RunManager) resolveProfilePipeline(ctx context.Context, runID, branch, 
 // merged step list is also validated by validateStepSpecs, which rejects
 // absolute paths and ".."). It returns the cleaned absolute path and whether it
 // is safe to read.
+//
+// Rootedness is judged OS-independently: filepath.IsAbs("/etc/passwd") is false
+// on Windows (no drive letter), so a leading separator or drive prefix is
+// rejected explicitly. Profile YAML is written once and read on every host, so
+// a path must be classified the same way everywhere — matching
+// validateSkillStepSpec, which rejects a leading "/" outright.
 func ProfilePathWithinDir(profileDir, rel string) (string, bool) {
-	if strings.TrimSpace(rel) == "" || filepath.IsAbs(rel) {
+	if strings.TrimSpace(rel) == "" || filepath.IsAbs(rel) || hasRootOrDrivePrefix(rel) {
 		return "", false
 	}
 	full := filepath.Join(profileDir, rel)
@@ -428,6 +434,20 @@ func ProfilePathWithinDir(profileDir, rel string) (string, bool) {
 		return "", false
 	}
 	return full, true
+}
+
+// hasRootOrDrivePrefix reports whether a path is rooted in a way filepath.IsAbs
+// may miss on the running OS: a leading "/" or "\" (drive-relative on Windows)
+// or a "C:"-style drive prefix (a plain relative path on unix).
+func hasRootOrDrivePrefix(path string) bool {
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) {
+		return true
+	}
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	c := path[0]
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
 }
 
 // loadProfileSkillBodies resolves each skill-driven profile step's body from a

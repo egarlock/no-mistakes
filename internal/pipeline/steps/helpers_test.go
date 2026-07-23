@@ -103,6 +103,11 @@ func ensureGitRepoTemplate(t *testing.T) {
 		run("init")
 		run("config", "user.name", "test")
 		run("config", "user.email", "test@test.com")
+		// Keep working-tree bytes identical to the committed bytes on every OS.
+		// Windows git installs default to core.autocrlf=true, so a file written
+		// with LF here comes back CRLF after any checkout (e.g. the read-only
+		// guard's `git reset --hard`), breaking byte-exact content assertions.
+		run("config", "core.autocrlf", "false")
 		run("checkout", "-b", "main")
 
 		os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base content"), 0o644)
