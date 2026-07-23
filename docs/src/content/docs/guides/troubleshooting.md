@@ -102,7 +102,7 @@ For `agent: acp:<target>`, set `acpx_path` instead:
 acpx_path: /Users/you/.local/bin/acpx
 ```
 
-The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing.
+The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing. The same line reports `login_shell_env_skipped`; when it reads `true`, the daemon inherited `NM_TEST_SKIP_LOGIN_SHELL_ENV=1` (a test-only escape hatch used by the end-to-end suite) and kept the `PATH` it was started with instead of reloading the login shell, so unset that variable and restart the daemon.
 
 ### Restart the daemon after installing a new agent
 
