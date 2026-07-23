@@ -60,6 +60,7 @@ func TestForkRouting(t *testing.T) {
 		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
 	if run.PRURL == nil || !strings.HasPrefix(*run.PRURL, "https://github.com/parent-owner/no-mistakes/pull/") {
+		h.dumpDebugState()
 		t.Fatalf("PR URL = %v, want parent repository PR URL", run.PRURL)
 	}
 

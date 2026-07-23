@@ -145,6 +145,7 @@ Safest local verification sequence after non-trivial changes:
 - Prefer targeted package tests while iterating, then finish with `go test -race ./...` and `make e2e` when your change affects those process or I/O boundaries.
 - The e2e suite lives behind the `e2e` build tag, so it is excluded from `go test ./...` and runs separately in CI via `make e2e`.
 - `make e2e` sweeps both `./internal/e2e/...` (full journey suite) and `./internal/pipeline/steps/...`, so step-local e2e tests (e.g. `internal/pipeline/steps/*_e2e_test.go`, gated by `//go:build e2e`) are also covered. Keep new step-local e2e tests behind the `e2e` tag so `go test ./...` still skips them.
+- The e2e harness sets `NM_TEST_SKIP_LOGIN_SHELL_ENV=1` so the daemon keeps the test process environment verbatim instead of overlaying the login shell's (`prepareDaemonEnvironment`, `internal/daemon/daemon.go`). Without it, macOS `/etc/zprofile` runs `path_helper`, which rebuilds PATH with system dirs first and demotes the harness `BinDir` stub prefix below a real `/opt/homebrew/bin/gh` - so the pipeline hits the real (unauthenticated-under-temp-HOME) gh, PR/CI steps silently skip, and `TestForkRouting` fails on macOS while passing on Linux CI (bash login shells preserve inherited PATH order). Any e2e test that depends on a stubbed binary resolving via PATH inside the daemon depends on this flag. Regression: `TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested`.
 
 **Repo Config Trust Boundary (security)**
 

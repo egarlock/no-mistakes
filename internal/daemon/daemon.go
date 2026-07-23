@@ -69,8 +69,15 @@ func prepareDaemonEnvironment() error {
 			return fmt.Errorf("unset %s: %w", key, err)
 		}
 	}
-	if err := applyShellEnvToProcess(); err != nil {
-		return fmt.Errorf("apply login shell environment: %w", err)
+	// NM_TEST_SKIP_LOGIN_SHELL_ENV keeps the inherited environment verbatim.
+	// The e2e harness sets it so its stub-binary PATH prefix (fake gh and
+	// agents) survives: on macOS the login-shell overlay runs /etc/zprofile's
+	// path_helper, which rebuilds PATH with system dirs first and demotes the
+	// harness stubs below a real gh install.
+	if os.Getenv("NM_TEST_SKIP_LOGIN_SHELL_ENV") != "1" {
+		if err := applyShellEnvToProcess(); err != nil {
+			return fmt.Errorf("apply login shell environment: %w", err)
+		}
 	}
 	if nmHome != "" {
 		if err := os.Setenv("NM_HOME", nmHome); err != nil {

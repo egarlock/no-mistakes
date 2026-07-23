@@ -51,6 +51,36 @@ func TestPrepareDaemonEnvironment_RemovesClaudeSessionVarsAndAppliesShellEnv(t *
 	}
 }
 
+// TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested pins the e2e
+// escape hatch: with NM_TEST_SKIP_LOGIN_SHELL_ENV=1 the daemon must keep its
+// inherited environment verbatim instead of overlaying the login shell's.
+// The e2e harness depends on this so its stub-binary PATH prefix (fake gh and
+// agents) survives on macOS, where /etc/zprofile's path_helper rebuilds PATH
+// with system dirs first and would demote the stubs below the real gh.
+func TestPrepareDaemonEnvironment_SkipsLoginShellEnvWhenRequested(t *testing.T) {
+	t.Setenv("NM_TEST_SKIP_LOGIN_SHELL_ENV", "1")
+	t.Setenv("PATH", "/stub/bin"+string(os.PathListSeparator)+"/usr/bin")
+	t.Setenv("CLAUDECODE", "1")
+
+	oldApply := applyShellEnvToProcess
+	defer func() { applyShellEnvToProcess = oldApply }()
+
+	applyShellEnvToProcess = func() error {
+		t.Fatal("login shell env must not be applied when NM_TEST_SKIP_LOGIN_SHELL_ENV=1")
+		return nil
+	}
+
+	if err := prepareDaemonEnvironment(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("PATH"); got != "/stub/bin"+string(os.PathListSeparator)+"/usr/bin" {
+		t.Fatalf("PATH = %q, want inherited PATH preserved", got)
+	}
+	if got := os.Getenv("CLAUDECODE"); got != "" {
+		t.Fatalf("expected CLAUDECODE cleared even when skipping shell env, got %q", got)
+	}
+}
+
 func TestPrepareDaemonEnvironment_PreservesExistingNMHome(t *testing.T) {
 	t.Setenv("NM_HOME", "/service/root")
 	t.Setenv("PATH", os.Getenv("PATH"))
