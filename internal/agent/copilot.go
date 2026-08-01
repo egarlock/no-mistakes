@@ -20,11 +20,43 @@ import (
 type copilotAgent struct {
 	bin       string
 	extraArgs []string
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildArgs suppresses copilot's project-level custom-instruction autoload.
+	disableProjectSettings bool
 }
 
 func (a *copilotAgent) Name() string { return "copilot" }
 
 func (a *copilotAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether copilot is currently launched
+// with the target repo's custom-instruction autoload disabled. It is
+// meaningful only under the opt-out (disableProjectSettings): the gate only
+// consults it when the repo opted out. The effective knob is
+// `--no-custom-instructions`, which disables AGENTS.md and related-file
+// autoload at startup.
+//
+// Empirical evidence (copilot 1.0.71 binary, real firstmate AGENTS.md plus a
+// CLAUDE.md symlink, fresh --session-id per arm, prompt "Who are you? Answer
+// in one short sentence. Do not use any tools."):
+//   - Control (no flag): "I'm your first mate, captain: the single point of
+//     contact who delegates and supervises all software work across your
+//     projects." Input 49.4k tokens.
+//   - Treatment (--no-custom-instructions): "I'm GitHub Copilot CLI, a
+//     terminal-based coding assistant powered by Claude Opus 5." Input 30.8k
+//     tokens.
+//
+// The ~18.6k token drop matches AGENTS.md not being loaded.
+//
+// Unlike codex/claude there is no operator-defeatable per-invocation override
+// path to detect from agent_args_override: this adapter prepends extraArgs and
+// appends managed flags, so the enforced trailing `--no-custom-instructions`
+// stays authoritative for this invocation. The accepted limit is unchanged
+// across all adapters: this blocks autoload, not file reads. An unsandboxed
+// gate agent can still read AGENTS.md/CLAUDE.md via tools.
+func (a *copilotAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings
+}
 
 func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "copilot", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
@@ -151,6 +183,9 @@ func (a *copilotAgent) buildArgs(prompt string) []string {
 		"--output-format", "json",
 		"--no-color",
 	)
+	if a.disableProjectSettings {
+		args = append(args, "--no-custom-instructions")
+	}
 	if !copilotUserSetAskUser(a.extraArgs) {
 		args = append(args, "--no-ask-user")
 	}

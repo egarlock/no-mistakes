@@ -112,6 +112,53 @@ func TestCopilotAgent_BuildArgs_UserAskUserSuppressesDefault(t *testing.T) {
 	}
 }
 
+func TestCopilotAgent_BuildArgs_DisableProjectSettingsAddsNoCustomInstructions(t *testing.T) {
+	ca := &copilotAgent{
+		bin:                    "copilot",
+		extraArgs:              []string{"--custom-instructions"},
+		disableProjectSettings: true,
+	}
+	args := ca.buildArgs("p")
+
+	countNoCustom := 0
+	posNoCustom := -1
+	posCustom := -1
+	for i, a := range args {
+		if a == "--no-custom-instructions" {
+			countNoCustom++
+			posNoCustom = i
+		}
+		if a == "--custom-instructions" {
+			posCustom = i
+		}
+	}
+	if countNoCustom != 1 {
+		t.Fatalf("expected one managed --no-custom-instructions, got %d: %v", countNoCustom, args)
+	}
+	if posCustom == -1 {
+		t.Fatalf("expected test extra arg --custom-instructions to be present: %v", args)
+	}
+	if posNoCustom <= posCustom {
+		t.Fatalf("--no-custom-instructions must be appended after extraArgs: %v", args)
+	}
+}
+
+func TestCopilotAgent_NeutralizesGateInstructions(t *testing.T) {
+	if (&copilotAgent{bin: "copilot"}).NeutralizesGateInstructions() {
+		t.Fatal("copilot must not report neutralized when the repo did not opt out")
+	}
+	if !(&copilotAgent{bin: "copilot", disableProjectSettings: true}).NeutralizesGateInstructions() {
+		t.Fatal("copilot must report neutralized when disableProjectSettings is enabled")
+	}
+	if !(&copilotAgent{
+		bin:                    "copilot",
+		extraArgs:              []string{"--custom-instructions"},
+		disableProjectSettings: true,
+	}).NeutralizesGateInstructions() {
+		t.Fatal("copilot must remain neutralized with pre-appended operator args")
+	}
+}
+
 func TestBuildCopilotPrompt_InlinesSchema(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)
 	prompt := buildCopilotPrompt("do the thing", schema)
