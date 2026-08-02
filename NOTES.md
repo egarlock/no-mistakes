@@ -249,3 +249,154 @@ here, as do the fork's own e2e tests (`TestSkillStepGateFlow`,
 This branch is **not** the pipeline's output and `main` was not touched.
 Landing is a captain-approved reset of `main` to this branch (a history
 rewrite), done separately after review.
+
+---
+
+# Rebase onto upstream v1.41.2 — notes
+
+Branch `fm/nm-1412-adoption-review` replays the fork's work onto upstream tag
+**v1.41.2** (`867d64d`). The previous fork line was based on v1.41.0
+(`6e9aaf2`); upstream advanced 6 commits across two patch releases.
+
+```
+v1.41.2 (867d64d)
+  └── 13 replayed fork commits + 1 new integration fix
+```
+
+All 13 fork commits replayed 1:1 with no flattening and no dropped upstream
+commit (`git log --left-right --cherry-pick upstream-v1.41.2...HEAD` shows
+nothing on the left).
+
+| Old | New | Commit |
+|---|---|---|
+| `1b2fdcc` | `8bc3e2f` | `feat(pipeline): per-repo steps: list…` |
+| `8f878da` | `8c71ee2` | `feat(pipeline): custom command steps (#2)` |
+| `f0afe61` | `8eb7529` | `docs(steps): iOS/Xcode testing recipe (#3)` |
+| `e0e487b` | `8ed4b58` | `feat(steps): iOS-oriented quick wins (#5)` |
+| `78196a0` | `20b103b` | `feat(pipeline): skill-driven steps (#4)` |
+| `9733eac` | `12f0707` | `feat(steps): mode: revise skill steps (#6)` |
+| `d919759` | `2d57645` | `feat(profiles): shared gate profiles PR-A (#7)` |
+| `e4e8f22` | `220ef36` | `fix(security): fail-closed fixes (#8)` |
+| `7d78ecb` | `2d29aff` | `Work-computer readiness: … drop telemetry (#9)` |
+| `8cbbd7d` | `0d39282` | `test(e2e): pin daemon environment (#10)` |
+| `c858b71` | `3f880b4` | `fix(branchsync): git < 2.40 equivalence` |
+| `47687ae` | `1515b5e` | `docs: record the v1.41.0 rebase` |
+| `5ed71bf` | `8a0c2ed` | `Add copilot gate instruction neutralization (#11)` |
+| — | `9880995` | **new**, see [Integration fix](#integration-fix) |
+
+Net: **151 files changed, 8525 insertions(+), 4695 deletions(-)** vs. v1.41.2.
+
+## What upstream added
+
+v1.41.1 and v1.41.2 are one operational-remediation package; all of it is
+retained:
+
+| Upstream PR | Behavior retained |
+|---|---|
+| #558 | Every qualifying PR body-compliance event runs to terminal state |
+| #562 | Bounded startup recovery; authoritative, fail-safe gate migration (`DB.GetRepos`) |
+| #565 | Subscribe-first AXI reconciliation (no 250 ms poll); bounded rotating daemon logs (`internal/logstore`) |
+| #567 | Recursive-run prevention (`internal/gatecontext`, `internal/gateguidance`, `internal/ipc/peer*`, `DB.OpenReadOnly`) |
+
+## Conflicts resolved
+
+Five conflicts, all at the intersection of upstream's daemon/AXI rework and
+the fork's telemetry removal. In every case upstream behavior was kept and
+only the telemetry plumbing was dropped:
+
+| File | Resolution |
+|---|---|
+| `cmd/no-mistakes/main.go` | Kept `errors` (used by `writeDaemonRunError`); dropped `context`, which upstream imported solely for the `telemetry.Close` deadline. |
+| `internal/cli/axi_query.go` | Kept upstream's `openAxiQueryEnv(runID)` — it resolves a run's repo by explicit run ID, which is real targeting behavior, not telemetry — with the fork's plain `error` return and no state fingerprint. |
+| `internal/cli/telemetry_test.go` | Stayed deleted (modify/delete). No shim. |
+| `internal/daemon/daemon.go` (×2) | Kept upstream's `runWithOptionsLocked` split and its `logstore` managed-server writer; dropped the `telemetry.Close` defer. Kept the fork's `logDaemonPathSummary(loginShellEnvSkipped bool)` signature but took upstream's comment rationale: upstream now calls `initLogger(lifecycleLog, "info")` *before* `prepareDaemonEnvironment`, so the fork's old "we emit via `slog.Default` to stderr" note was stale and was removed. |
+
+## Integration fix
+
+`9880995` covers two upstream additions that merged textually but were
+semantically incompatible with fork-only APIs, so git reported no conflict:
+
+- `DB.GetRepos` (new in #562) did not select the fork's `repos.local_profile`,
+  making it the only `Repo` reader returning a silently zeroed `LocalProfile`.
+  Its sole caller reads working paths, so there was no live bug — but the
+  inconsistency is a trap. Now selected, matching every other reader.
+- `internal/gatecontext/classifier_test.go` and
+  `internal/daemon/daemon_shutdown_test.go` (both new upstream files) call
+  `InsertStepResult(runID, stepName)`; the fork's ordered-step work added a
+  `stepOrder int`. Both now pass `0`.
+
+## Verification
+
+All green on this host (macOS 15.7.7, go 1.26.4):
+
+- `gofmt -l .` — empty
+- `make lint` (skill drift check + `go vet ./...`) — clean, `SKILL.md` up to date
+- `go test -race ./...` — 35 packages ok, exit 0
+- `go build -o ./bin/no-mistakes ./cmd/no-mistakes` — ok
+- `make e2e` — **green, exit 0** (see [e2e note](#e2e-and-git_config-injection))
+
+```
+ok  github.com/kunchenguid/no-mistakes/internal/e2e            363.096s
+ok  github.com/kunchenguid/no-mistakes/internal/pipeline/steps  55.968s
+```
+
+Fork invariants re-checked explicitly:
+
+```sh
+test ! -d internal/telemetry          # pass
+test ! -f internal/cli/telemetry.go   # pass
+test ! -f docs/install.sh             # pass
+git grep 'telemetry\.Close\|trackReadSurface\|UMAMI_HOST\|UMAMI_WEBSITE_ID'
+# only AGENTS.md / NOTES.md prose describing the removal — no code path
+git diff --check upstream-v1.41.2...HEAD   # clean
+```
+
+Upstream's recursive-run e2e passes for every agent flavour including
+`copilot`, confirming the fork's `--no-custom-instructions` neutralization and
+the new gate guard compose: `NO_MISTAKES_GATE` stays diagnostic while
+authorization rests on managed-Git identity plus daemon-peer ancestry.
+
+```
+--- PASS: TestGateStepCannotStartRecursivePipeline (claude, codex, rovodev,
+          opencode, pi, copilot, cursor, explicit-acp)
+--- PASS: TestSharedProfileAcrossTwoRepos, TestProfileSpliceComposition
+--- PASS: TestSkillStepTrustedSHA, TestSkillStepReviseFullRun
+```
+
+## e2e and GIT_CONFIG injection
+
+`internal/e2e`'s `TestMain` does **not** unset `GIT_CONFIG_COUNT`, unlike
+`internal/git`, `internal/gate`, `internal/daemon`, and
+`internal/pipeline/steps`. Under an agent harness that injects
+`safe.bareRepository=explicit`, 17 e2e tests fail in *test helpers* that shell
+out to git against bare gate repos, with a misleading
+`cannot use bare repository … (safe.bareRepository is 'explicit')`. Production
+code is unaffected — it routes through `git.Run`, which prepends `--git-dir`.
+
+Run the suite with that injection cleared:
+
+```sh
+env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 \
+    -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 make e2e
+```
+
+Deliberately **not** fixed here to keep this branch a pure rebase; extending
+the existing `TestMain` convention to `internal/e2e` is filed as a follow-up.
+
+The suite also now exceeds `scripts/e2e.sh`'s default `-timeout 300s` on a
+loaded host (upstream added tests; the timeout is unchanged from v1.41.0).
+`scripts/e2e.sh` accepts caller overrides:
+
+```sh
+bash scripts/e2e.sh -tags=e2e -count=1 -timeout 1800s \
+  ./internal/e2e/... ./internal/pipeline/steps/...
+```
+
+## Landing
+
+This branch is **review-only**. `main` was not touched and this PR must not be
+merged through the forge — merging would create a merge commit on top of the
+old v1.41.0 base rather than rebasing it away. Landing is a captain-approved
+`--force-with-lease` update of `main` to this branch (a protected history
+rewrite), done separately after review. `backup/pre-v1.41.2-adoption` pins the
+pre-rebase head `5ed71bf` for recovery.
