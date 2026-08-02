@@ -195,6 +195,7 @@ func TestParseCopilotEvents_FinalMessageAndUsage(t *testing.T) {
 	var messages []string
 	var copilotErr string
 	exitCode := -1
+	var completion copilotCompletion
 
 	err := parseCopilotEvents(
 		context.Background(),
@@ -204,6 +205,7 @@ func TestParseCopilotEvents_FinalMessageAndUsage(t *testing.T) {
 		&messages,
 		&copilotErr,
 		&exitCode,
+		&completion,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -236,7 +238,8 @@ func TestParseCopilotEvents_CapturesErrorEvent(t *testing.T) {
 	var messages []string
 	var copilotErr string
 	exitCode := 0
-	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode)
+	var completion copilotCompletion
+	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode, &completion)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +263,8 @@ func TestParseCopilotEvents_SkipsMalformedAndSessionLines(t *testing.T) {
 	var messages []string
 	var copilotErr string
 	exitCode := 0
-	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode)
+	var completion copilotCompletion
+	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode, &completion)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -405,7 +409,8 @@ func TestParseCopilotEvents_CollectsAllAssistantMessages(t *testing.T) {
 	var messages []string
 	var copilotErr string
 	exitCode := 0
-	if err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode); err != nil {
+	var completion copilotCompletion
+	if err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode, &completion); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{`{"ok":true}`, "Now I've applied the fix."}
@@ -438,7 +443,7 @@ func TestFinalizeCopilotResult_RecoversJSONBeforeProseSummary(t *testing.T) {
 		"Now I've applied all four fixes and verified the build passes.",
 	}
 
-	result, err := finalizeCopilotResult(messages, schema, TokenUsage{})
+	result, err := finalizeCopilotResult(copilotCompletion{}, messages, schema, TokenUsage{})
 	if err != nil {
 		t.Fatalf("expected recovery of earlier JSON message, got error: %v", err)
 	}
@@ -461,7 +466,7 @@ func TestFinalizeCopilotResult_PrefersNewestParsingMessage(t *testing.T) {
 		"All done.",
 	}
 
-	result, err := finalizeCopilotResult(messages, schema, TokenUsage{})
+	result, err := finalizeCopilotResult(copilotCompletion{}, messages, schema, TokenUsage{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -472,7 +477,7 @@ func TestFinalizeCopilotResult_PrefersNewestParsingMessage(t *testing.T) {
 
 func TestFinalizeCopilotResult_NoSchemaUsesLastMessage(t *testing.T) {
 	messages := []string{"first", "second"}
-	result, err := finalizeCopilotResult(messages, nil, TokenUsage{})
+	result, err := finalizeCopilotResult(copilotCompletion{}, messages, nil, TokenUsage{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -487,7 +492,7 @@ func TestFinalizeCopilotResult_NoneParseReturnsDebuggableError(t *testing.T) {
 		"Now I've applied all four fixes and verified the build passes.",
 	}
 
-	_, err := finalizeCopilotResult(messages, schema, TokenUsage{})
+	_, err := finalizeCopilotResult(copilotCompletion{}, messages, schema, TokenUsage{})
 	if err == nil {
 		t.Fatal("expected parse error when no message satisfies the schema")
 	}
