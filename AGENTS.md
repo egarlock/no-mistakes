@@ -177,6 +177,13 @@ Safest local verification sequence after non-trivial changes:
 - `runs.awaiting_agent_since` is non-nil **iff** a step is actually parked at an `awaiting_approval`/`fix_review` gate: the executor sets it on gate entry, clears it when `waitForApproval` returns, and `RecoverStaleRuns` clears it on crash recovery. It is observability only (rendered as `awaiting_agent: parked <duration>` in `axi status`) and never changes gate resolution, auto-resume, or the `--yes` default.
 - Tests: `internal/db/run_test.go`, `internal/pipeline/executor_approval_test.go`, `internal/cli/axi_test.go`, e2e `TestAxiParkedAwaitingAgentSignal`.
 
+**Copilot Final-Response Channel (`internal/agent/copilot.go`)**
+
+- Copilot CLI delivers its final non-interactive answer through the terminal `session.task_complete` event (`data.summary`), not the trailing `assistant.message`, which is mid-turn progress narration. Reading the last message made every structured-output step fail with `copilot output parse: invalid character 'T'`. `finalizeCopilotResult` tries the `task_complete` summary first, then assistant messages newest-first; every candidate goes through the unchanged strict `finalizeTextResult` schema validation, and total failure reports the designated final response (the summary). Do not make the summary exclusive: measured over 55 historical invocations, summary-first + message fallback satisfies the contract 55/55 while messages-only satisfies 46/55, and 25 runs carried a prose summary with valid JSON in a message.
+- Copilot exposes no native schema flag (claude uses `--json-schema`, codex `--output-schema`), so the inline-prompt contract plus this event is the only structured path, and it emits no `result` event, so the process exits 0 and nothing fails until the final parse. `toolRequests` is not a final-message signal: in the captured run the findings messages had 0 and the closing narration had 7.
+- Raw streams for forensics live at `~/.copilot/session-state/<uuid>/events.jsonl`, matched to a run via that dir's `workspace.yaml` `cwd`.
+- Regressions: `internal/agent/copilot_taskcomplete_test.go` (against the captured fixture `internal/agent/testdata/copilot_review_task_complete.jsonl`) and `internal/pipeline/steps/copilot_review_contract_test.go`.
+
 **Review-Loop Agent Sessions (`internal/pipeline/sessions.go`)**
 
 - Per run, the review loop keeps ONE durable reviewer session across the initial review and every full rereview, and a SEPARATE fixer session across review-fix turns; roles never share a session (the reviewer must never inherit the fixer's rationale), no other step uses sessions, and sessions are keyed strictly by run. Every review turn is still a full adversarial review of the complete branch diff.

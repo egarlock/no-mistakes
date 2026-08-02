@@ -95,7 +95,8 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	var messages []string
 	var copilotErr string
 	exitCode := 0
-	if err := parseCopilotEvents(ctx, started.stdout, opts.OnChunk, &usage, &messages, &copilotErr, &exitCode); err != nil {
+	var completion copilotCompletion
+	if err := parseCopilotEvents(ctx, started.stdout, opts.OnChunk, &usage, &messages, &copilotErr, &exitCode, &completion); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("copilot parse events: %w", err)
@@ -128,33 +129,81 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 		return nil, retErr
 	}
 
-	res, err := finalizeCopilotResult(messages, opts.JSONSchema, usage)
+	res, err := finalizeCopilotResult(completion, messages, opts.JSONSchema, usage)
 	emitAgentExited(opts, "copilot", pid, err)
 	return res, err
 }
 
-// finalizeCopilotResult converts the assistant messages emitted during a run
-// into a structured Result. With no schema it uses the final message verbatim.
-// With a schema it tries each assistant message newest-first and returns the
-// first that parses against it: Copilot is non-deterministic about honoring the
-// JSON-only output contract and frequently emits the schema JSON in an earlier
-// message, then closes with a prose summary (e.g. "Now I've applied all four
-// fixes…") that no extraction strategy can recover. If none parse it falls back
-// to the final message so the returned error reflects the actual final output.
-func finalizeCopilotResult(messages []string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
-	lastMessage := ""
-	if len(messages) > 0 {
-		lastMessage = messages[len(messages)-1]
-	}
+// copilotCompletion is the payload of the terminal `session.task_complete`
+// event: copilot's designated final response for a non-interactive `-p` run.
+// The CLI ends such a run by invoking its built-in `task_complete` tool, whose
+// summary argument carries the answer; the trailing assistant.message is
+// mid-turn progress narration.
+type copilotCompletion struct {
+	Summary string
+	Success bool
+	// Reported distinguishes "copilot emitted no task_complete event" from
+	// "copilot reported an empty summary".
+	Reported bool
+}
+
+// finalizeCopilotResult converts a completed copilot run into a structured
+// Result.
+//
+// Copilot has no equivalent of claude's --json-schema or codex's
+// --output-schema, so the contract is inlined in the prompt and the answer is
+// recovered from the event stream. The authoritative source is the terminal
+// session.task_complete event: in `-p` mode the CLI finishes by calling its
+// built-in task_complete tool, and that tool's summary is the final response.
+// Reading the last assistant.message instead is what broke every review step
+// with `copilot output parse: invalid character 'T'`, because copilot narrates
+// progress between tool calls and that narration is usually the trailing
+// message. Across all 55 recorded no-mistakes copilot invocations,
+// task_complete was present every time, while the trailing message satisfied
+// the requested schema only rarely.
+//
+// Assistant messages remain a fallback, newest-first: copilot is
+// non-deterministic about honoring the contract and sometimes emits the schema
+// JSON in an earlier message and closes with a prose summary. Every candidate,
+// including the task_complete summary, is validated against the schema by
+// finalizeTextResult; nothing is accepted unvalidated and no success-shaped
+// result is synthesized. When no candidate satisfies the contract the error
+// reports the designated final response, so the failure names copilot's actual
+// output rather than an intermediate message.
+func finalizeCopilotResult(completion copilotCompletion, messages []string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if len(schema) == 0 {
-		return finalizeTextResult("copilot", lastMessage, schema, usage)
+		return finalizeTextResult("copilot", copilotFinalText(completion, messages), schema, usage)
+	}
+
+	if completion.Reported && strings.TrimSpace(completion.Summary) != "" {
+		if result, err := finalizeTextResult("copilot", completion.Summary, schema, usage); err == nil {
+			return result, nil
+		}
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
 		if result, err := finalizeTextResult("copilot", messages[i], schema, usage); err == nil {
 			return result, nil
 		}
 	}
-	return finalizeTextResult("copilot", lastMessage, schema, usage)
+
+	_, err := finalizeTextResult("copilot", copilotFinalText(completion, messages), schema, usage)
+	if err != nil && completion.Reported && !completion.Success {
+		return nil, fmt.Errorf("%w (copilot task_complete reported success=false)", err)
+	}
+	return nil, err
+}
+
+// copilotFinalText returns copilot's final response: the task_complete summary
+// when the CLI reported one, otherwise the last assistant message, which is the
+// only source available on builds that emit no task_complete event.
+func copilotFinalText(completion copilotCompletion, messages []string) string {
+	if completion.Reported && strings.TrimSpace(completion.Summary) != "" {
+		return completion.Summary
+	}
+	if len(messages) > 0 {
+		return messages[len(messages)-1]
+	}
+	return ""
 }
 
 func copilotErrorDetail(copilotErr, stderr string) string {
@@ -262,12 +311,16 @@ type copilotEventData struct {
 	// error / abort events
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// session.task_complete
+	Summary string `json:"summary,omitempty"`
+	Success *bool  `json:"success,omitempty"`
 }
 
 // parseCopilotEvents reads JSONL from the reader and dispatches events. It
 // streams assistant.message_delta content to onChunk, appends each non-empty
 // assistant.message text to messages (oldest first), accumulates output tokens,
-// and records the terminal result event's exit code.
+// captures the terminal session.task_complete payload (copilot's designated
+// final response), and records the terminal result event's exit code.
 func parseCopilotEvents(
 	ctx context.Context,
 	r io.Reader,
@@ -276,6 +329,7 @@ func parseCopilotEvents(
 	messages *[]string,
 	copilotErr *string,
 	exitCode *int,
+	completion *copilotCompletion,
 ) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
@@ -317,6 +371,16 @@ func parseCopilotEvents(
 				if msg := firstNonEmpty(event.Data.Message, event.Data.Error); msg != "" {
 					*copilotErr = msg
 				}
+			}
+
+		case "session.task_complete":
+			if event.Data == nil || completion == nil {
+				continue
+			}
+			*completion = copilotCompletion{
+				Summary:  event.Data.Summary,
+				Success:  event.Data.Success == nil || *event.Data.Success,
+				Reported: true,
 			}
 
 		case "result":
