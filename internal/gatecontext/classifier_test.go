@@ -108,7 +108,7 @@ func TestInspectorUsesAuthenticatedProcessAncestryAfterCWDChange(t *testing.T) {
 	if err := f.d.UpdateRunStatus(runRecord.ID, types.RunRunning); err != nil {
 		t.Fatalf("start run: %v", err)
 	}
-	step, err := f.d.InsertStepResult(runRecord.ID, types.StepDocument)
+	step, err := f.d.InsertStepResult(runRecord.ID, types.StepDocument, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}

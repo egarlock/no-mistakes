@@ -24,7 +24,7 @@ func TestShutdownRefusesActiveAgentPeer(t *testing.T) {
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatalf("mark run active: %v", err)
 	}
-	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	step, err := database.InsertStepResult(run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}
